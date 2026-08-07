@@ -377,15 +377,26 @@ EXPERT_GROUP = 128
 EXPERT_OVERRIDES = {}
 
 
+_EXPERT_PROJS = ("w1", "w2", "w3")
+
+
 def parse_expert_override(spec):
-    """"37-42=4:64" | "5=3:32" -> {layer: (bits, gs)}. Comma-joins allowed."""
+    """"37-42=4:64" | "5=3:32" | "6=w2:2:64" -> {layer: (bits, gs) | {proj: (bits, gs)}}.
+    Comma-joins allowed; a "PROJ:BITS:GS" entry overrides only that projection of
+    the layer (others keep the recipe default), a "BITS:GS" entry overrides all."""
     out = {}
     for part in spec.split(","):
         rng_s, _, bg = part.partition("=")
-        bits_s, _, gs_s = bg.partition(":")
+        head, _, rest = bg.partition(":")
+        proj = head if head in _EXPERT_PROJS else None
+        bits_s, _, gs_s = rest.partition(":") if proj else (head, "", rest)
+        entry = (int(bits_s), int(gs_s))
         lo, _, hi = rng_s.partition("-")
         for li in range(int(lo), int(hi or lo) + 1):
-            out[li] = (int(bits_s), int(gs_s))
+            if proj is None:
+                out[li] = entry
+            else:
+                out.setdefault(li, {})[proj] = entry
     return out
 
 
@@ -402,18 +413,27 @@ def _trunk_override(pfx):
 
 
 def expert_bits(pfx, proj):
-    """Expert bit width by MODULE: draft stages are not the trunk."""
+    """Expert bit width by MODULE: draft stages are not the trunk. A per-proj
+    override dict falls through to the recipe default for unlisted projections."""
     ov = _trunk_override(pfx)
     if ov is not None:
-        return ov[0]
+        if not isinstance(ov, dict):
+            return ov[0]
+        ov = ov.get(proj)
+        if ov is not None:
+            return ov[0]
     return (MTP_EXPERT_BITS if pfx.startswith("mtp.") else EXPERT_BITS)[proj]
 
 
-def expert_group(pfx):
+def expert_group(pfx, proj=None):
     """Expert group size by MODULE: draft stages keep the spine's gs 64."""
     ov = _trunk_override(pfx)
     if ov is not None:
-        return ov[1]
+        if not isinstance(ov, dict):
+            return ov[1]
+        ov = ov.get(proj) if proj is not None else None
+        if ov is not None:
+            return ov[1]
     return SPINE_GROUP if pfx.startswith("mtp.") else EXPERT_GROUP
 
 
@@ -488,7 +508,7 @@ def dry_run_size(src):
                 continue
             out_d, in_d = shape[0], shape[1] * 2  # packed fp4
             bits = expert_bits(cls[1], cls[3])
-            gs = expert_group(cls[1])
+            gs = expert_group(cls[1], cls[3])
             n = out_d * (in_d * bits // 8 + in_d // gs * 4)
             key = f"expert.{cls[3]}({bits}b/g{gs})"
         else:
@@ -580,7 +600,7 @@ def convert(src, out, only_groups=None, verify=False, imatrix=None, imatrix_name
             layer = int(re.match(r"^layers\.(\d+)\.", pfx).group(1)) if is_trunk else None
             for proj in ("w1", "w2", "w3"):
                     bits = expert_bits(pfx, proj)
-                    gs = expert_group(pfx)
+                    gs = expert_group(pfx, proj)
                     wq_l, sc_l, bi_l = [], [], []
                     if is_trunk:
                         # Weighted (imatrix-calibrated) path; uniform weights
@@ -692,7 +712,7 @@ def convert(src, out, only_groups=None, verify=False, imatrix=None, imatrix_name
                 # what picks the draft-stage widths — the engine dequants from
                 # this dict, so a trunk-vs-draft mixup here is silent garbage.
                 bits = expert_bits(tn, m.group(1)) if m else 8
-                gs = expert_group(tn) if m else SPINE_GROUP
+                gs = expert_group(tn, m.group(1)) if m else SPINE_GROUP
                 quant_cfg[tn[:-7]] = {"group_size": gs, "bits": bits, "mode": "affine"}
         out_cfg = dict(cfg)
         out_cfg.pop("quantization_config", None)  # fp8 source config must not leak
@@ -941,6 +961,14 @@ def self_test():
             check(ov == {li: (4, 64) for li in range(37, 43)}, "override: range parse")
             ov2 = parse_expert_override("5=3:32")
             check(ov2 == {5: (3, 32)}, "override: single-layer parse")
+            ov3 = parse_expert_override("6=w2:2:64,6=w1:3:64")
+            check(ov3 == {6: {"w2": (2, 64), "w1": (3, 64)}}, "override: per-proj parse")
+            set_expert_overrides({6: {"w2": (2, 64)}})
+            check(expert_bits("layers.6.ffn", "w2") == 2
+                  and expert_group("layers.6.ffn", "w2") == 64, "override: per-proj hit")
+            check(expert_bits("layers.6.ffn", "w1") == EXPERT_BITS["w1"]
+                  and expert_group("layers.6.ffn", "w1") == EXPERT_GROUP,
+                  "override: per-proj fall-through for unlisted proj")
             set_expert_overrides({37: (4, 64)})
             check(expert_bits("layers.37.ffn", "w1") == 4
                   and expert_bits("layers.37.ffn", "w2") == 4, "override: expert_bits hit")
