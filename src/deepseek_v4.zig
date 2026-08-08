@@ -5466,6 +5466,38 @@ fn moeGpuImpl(m: *const Dsv4Model, alloc: std.mem.Allocator, li: usize, x_g: mlx
         }
         var rg = try routeGpu(m.s, alloc, scores_g, ly.gate_bias, h.tid2eid, ly.tid2eid, id_arr, ids, E, k, m.route_scale);
         defer rg.deinit();
+        if (trace_call) |tc| {
+            const indices_ready = blk: {
+                mlx.check(mlx.mlx_array_eval(rg.ind)) catch |err| {
+                    log.warn("[router-trace] GPU route indices eval failed: {s}\n", .{@errorName(err)});
+                    break :blk false;
+                };
+                break :blk true;
+            };
+            if (indices_ready) {
+                if (mlx.mlx_array_data_int32(rg.ind)) |selected_indices| {
+                    var lazy_id_storage: [1]u32 = undefined;
+                    const trace_ids: ?[]const u32 = if (id_arr) |id_gpu| ids_block: {
+                        const id_ready = id_eval: {
+                            mlx.check(mlx.mlx_array_eval(id_gpu)) catch |err| {
+                                log.warn("[router-trace] GPU token id eval failed: {s}\n", .{@errorName(err)});
+                                break :id_eval false;
+                            };
+                            break :id_eval true;
+                        };
+                        if (!id_ready) break :ids_block null;
+                        const id_data = mlx.mlx_array_data_int32(id_gpu) orelse break :ids_block null;
+                        lazy_id_storage[0] = @intCast(id_data[0]);
+                        break :ids_block lazy_id_storage[0..];
+                    } else ids;
+                    if (trace_ids) |ids_host| {
+                        if (ids_host.len == seq) {
+                            tc.sink.appendHost(tc.phase, tc.token_base, @intCast(li), ids_host, selected_indices[0 .. seq * k], seq, k);
+                        }
+                    }
+                }
+            }
+        }
         try mlx.check(mlx.mlx_array_set(&ind, rg.ind));
         try mlx.check(mlx.mlx_array_set(&w_arr, rg.w));
     } else {
