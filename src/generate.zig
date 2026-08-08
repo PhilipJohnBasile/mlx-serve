@@ -2025,6 +2025,11 @@ pub const Generator = struct {
         if (specDecodeUnsupported(self.sampling, self.logprobs_n)) return error.SpecDecodeUnsupported;
         const mdl = self.xfm.dsv4.?;
         const t1 = self.next_token_id;
+        const debug_state = std.c.getenv("MLX_SERVE_DSPARK_TRACE_STATE") != null;
+        if (debug_state) {
+            const fp = dsv4_mod.fingerprintDecodeState(&mdl.dec_state.?);
+            log.info("[dspark-debug] before t1={d} n={d} hash={x} pending={d}\n", .{ t1, fp.n, fp.hash, fp.pending_rows });
+        }
         var round = if (self.dspark_stochastic)
             try self.dsparkStochasticRound(allocator, mdl, t1)
         else
@@ -2051,6 +2056,10 @@ pub const Generator = struct {
         try self.generated_ids.appendSlice(allocator, round.tokens);
         self.advanceStep(@intCast(round.tokens.len));
         self.next_token_id = round.next_token;
+        if (debug_state) {
+            const fp = dsv4_mod.fingerprintDecodeState(&mdl.dec_state.?);
+            log.info("[dspark-debug] after tokens={any} next={d} accepted={d} n={d} hash={x} pending={d}\n", .{ round.tokens, round.next_token, round.accepted, fp.n, fp.hash, fp.pending_rows });
+        }
         // tokens ownership transfers to the caller (scheduler frees).
         return DrafterStepResult{ .tokens = round.tokens, .accepted_tokens = round.accepted };
     }
@@ -8837,6 +8846,11 @@ test "dsv4: Generator DSpark serial equivalence (env-gated)" {
             try testing.expect(false);
         }
     }
+    std.debug.print("[generator-serial-eq] serial_hash={x} dspark_hash={x} tokens={d}\n", .{
+        std.hash.Wyhash.hash(0, std.mem.sliceAsBytes(serial.items)),
+        std.hash.Wyhash.hash(0, std.mem.sliceAsBytes(ds.items)),
+        serial.items.len,
+    });
     try testing.expect(ds_gen.dspark_attempted > 0);
     try testing.expectEqual(ds_gen.ctx.cache.step, ds_xfm.dsv4.?.dec_state.?.n);
 }

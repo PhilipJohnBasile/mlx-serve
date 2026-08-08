@@ -4317,6 +4317,8 @@ fn runSingleDecodeTick(sch: *Scheduler, slot: *Slot) !void {
             return;
         }
         defer slot.allocator.free(result.?.tokens);
+        const generated_before = gen.generated_ids.items.len - result.?.tokens.len;
+        var emitted: usize = 0;
         for (result.?.tokens) |t| {
             if (slot.cancelled.load(.acquire)) return;
             if (generate_mod.isEosId(t, slot.eos_token_ids)) {
@@ -4324,8 +4326,13 @@ fn runSingleDecodeTick(sch: *Scheduler, slot: *Slot) !void {
                 return;
             }
             slot.pushToken(t);
-            slot.completion_tokens = gen.completion_tokens;
+            slot.completion_tokens += 1;
             if (t != 0) slot.was_pad_only = false;
+            emitted += 1;
+            if (loopStopReason(gen.generated_ids.items[0 .. generated_before + emitted])) |reason| {
+                finishSlot(sch, slot, reason);
+                return;
+            }
             if (slot.completion_tokens >= slot.max_tokens) {
                 finishSlot(sch, slot, "length");
                 return;
@@ -4347,7 +4354,7 @@ fn runSingleDecodeTick(sch: *Scheduler, slot: *Slot) !void {
                 return;
             }
             slot.pushToken(t);
-            slot.completion_tokens = gen.completion_tokens;
+            slot.completion_tokens += 1;
             if (t != 0) slot.was_pad_only = false;
             if (slot.completion_tokens >= slot.max_tokens) {
                 finishSlot(sch, slot, "length");
@@ -4371,7 +4378,7 @@ fn runSingleDecodeTick(sch: *Scheduler, slot: *Slot) !void {
                 return;
             }
             slot.pushToken(t);
-            slot.completion_tokens = gen.completion_tokens;
+            slot.completion_tokens += 1;
             if (t != 0) slot.was_pad_only = false;
             if (slot.completion_tokens >= slot.max_tokens) {
                 finishSlot(sch, slot, "length");
@@ -4395,7 +4402,7 @@ fn runSingleDecodeTick(sch: *Scheduler, slot: *Slot) !void {
                 return;
             }
             slot.pushToken(t);
-            slot.completion_tokens = gen.completion_tokens;
+            slot.completion_tokens += 1;
             if (t != 0) slot.was_pad_only = false;
             if (slot.completion_tokens >= slot.max_tokens) {
                 finishSlot(sch, slot, "length");
