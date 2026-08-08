@@ -4690,6 +4690,67 @@ pub const Dsv4Snapshot = struct {
     }
 };
 
+pub const Dsv4StateFingerprint = struct {
+    n: usize,
+    kv_gpu_used: usize,
+    comp_gpu_used: usize,
+    idx_gpu_used: usize,
+    comp_cache_len: usize,
+    idx_cache_len: usize,
+    pending_rows: usize,
+    dspark_used: usize,
+    hash: u64,
+};
+
+/// Compact diagnostic fingerprint for serial/speculative equivalence work.
+/// It intentionally hashes counters and cursor state, not the full model or
+/// every cache tensor; callers can use the first divergent counter to decide
+/// which smaller state component merits a deeper tensor hash.
+pub fn fingerprintDecodeState(st: *const Dsv4DecodeState) Dsv4StateFingerprint {
+    var kv_gpu_used: usize = 0;
+    var comp_gpu_used: usize = 0;
+    var idx_gpu_used: usize = 0;
+    var comp_cache_len: usize = 0;
+    var idx_cache_len: usize = 0;
+    for (st.layers) |*ls| {
+        kv_gpu_used += ls.kv_gpu.used;
+        comp_gpu_used += ls.comp_gpu.used;
+        idx_gpu_used += ls.idx_gpu.used;
+        if (ls.comp) |*c| comp_cache_len += c.cache.items.len;
+        if (ls.idx_comp) |*c| idx_cache_len += c.cache.items.len;
+    }
+    var dspark_used: usize = 0;
+    if (st.dspark) |*ds| {
+        for (ds.main_kv) |*ring| dspark_used += ring.used;
+    }
+
+    var h = std.hash.Wyhash.init(0);
+    const add = struct {
+        fn f(hasher: *std.hash.Wyhash, value: anytype) void {
+            hasher.update(std.mem.asBytes(&value));
+        }
+    }.f;
+    add(&h, st.n);
+    add(&h, kv_gpu_used);
+    add(&h, comp_gpu_used);
+    add(&h, idx_gpu_used);
+    add(&h, comp_cache_len);
+    add(&h, idx_cache_len);
+    add(&h, st.pending.items.len);
+    add(&h, dspark_used);
+    return .{
+        .n = st.n,
+        .kv_gpu_used = kv_gpu_used,
+        .comp_gpu_used = comp_gpu_used,
+        .idx_gpu_used = idx_gpu_used,
+        .comp_cache_len = comp_cache_len,
+        .idx_cache_len = idx_cache_len,
+        .pending_rows = st.pending.items.len,
+        .dspark_used = dspark_used,
+        .hash = h.final(),
+    };
+}
+
 fn snapshotCompDec(alloc: std.mem.Allocator, cs: *const CompDecState) !CompDecSnapshot {
     const kvp = try alloc.dupe(f32, cs.kv_pend);
     errdefer alloc.free(kvp);
@@ -8954,6 +9015,7 @@ pub const DsparkPending = struct {
     phases: DsparkPhases,
     clk: DsparkClock,
     prof_on: bool,
+    serial_verify: bool = false,
 
     /// Called by the consumer right after ITS host sync of `vl_g`'s graph —
     /// the honest place for the verify lap now that begin returns lazy.
@@ -9006,11 +9068,39 @@ pub fn dsparkBeginWith(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeSta
     // confidence gate submits this round.
     try armAnchors(m, st, m.ds_block);
     if (prof_on) ph.snapshot_ns = clk.lap();
+    const serial_verify = std.c.getenv("MLX_SERVE_DSPARK_SERIAL_VERIFY") != null;
+
+    // A closed confidence gate submits no draft tokens. The one-token batched
+    // verification graph is numerically distinct from the serial decode path
+    // (and buys no speculative work), so use the target's ordinary step and
+    // wrap its logits. This preserves the DSpark entry invariant while making
+    // the zero-draft lane exactly serial-equivalent.
+    if (B == 0) {
+        const logits = try decodeStep(m, gpa, st, t1);
+        defer gpa.free(logits);
+        const shape = [_]c_int{ 1, @intCast(m.vocab) };
+        const vl_g = mlx.mlx_array_new_data(logits.ptr, &shape, 2, .float32);
+        const empty_verify: [16]u32 = @splat(0);
+        return .{ .snap = snap, .vl_g = vl_g, .b = 0, .verify = empty_verify, .phases = ph, .clk = clk, .prof_on = prof_on, .serial_verify = serial_verify };
+    }
 
     var verify: [16]u32 = undefined;
     verify[0] = t1;
     @memcpy(verify[1 .. B + 1], draft.ids[1 .. B + 1]);
     std.debug.assert(B + 1 <= prefillSub());
+    if (serial_verify) {
+        const logits = try gpa.alloc(f32, (B + 1) * m.vocab);
+        errdefer gpa.free(logits);
+        for (verify[0 .. B + 1], 0..) |token, i| {
+            const row = try decodeStep(m, gpa, st, token);
+            defer gpa.free(row);
+            @memcpy(logits[i * m.vocab ..][0..m.vocab], row);
+        }
+        const shape = [_]c_int{ @intCast(B + 1), @intCast(m.vocab) };
+        const vl_g = mlx.mlx_array_new_data(logits.ptr, &shape, 2, .float32);
+        gpa.free(logits);
+        return .{ .snap = snap, .vl_g = vl_g, .b = B, .verify = verify, .phases = ph, .clk = clk, .prof_on = prof_on, .serial_verify = true };
+    }
     const vl_g = try extendChunk(m, gpa, st, verify[0 .. B + 1], .all_gpu, null);
     return .{ .snap = snap, .vl_g = vl_g, .b = B, .verify = verify, .phases = ph, .clk = clk, .prof_on = prof_on };
 }
@@ -9022,11 +9112,18 @@ pub fn dsparkBeginWith(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeSta
 /// the ORIGINAL verify logits at the acceptance point (the house
 /// partial-accept invariant; sampled form on the stochastic arm).
 pub fn dsparkFinish(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, pending: *DsparkPending, accepted: usize, next_token: u32) !DsparkRound {
-    _ = m;
     std.debug.assert(accepted <= pending.b);
     if (accepted < pending.b) {
         if (pending.prof_on) _ = pending.clk.lap(); // the accept scan is host-only bookkeeping
-        restoreToAnchor(st, &pending.snap, accepted);
+        if (pending.serial_verify) {
+            restoreDecodeState(st, &pending.snap);
+            for (pending.verify[0 .. accepted + 1]) |token| {
+                const logits = try decodeStep(m, gpa, st, token);
+                gpa.free(logits);
+            }
+        } else {
+            restoreToAnchor(st, &pending.snap, accepted);
+        }
         if (pending.prof_on) pending.phases.rollback_ns = pending.clk.lap();
     } else if (st.anchors) |*an| an.armed = false;
 
@@ -10282,4 +10379,201 @@ test "dsv4: comp_in decode requant rides --decode-attn-quant (DSV4_MINI)" {
             try testing.expectEqual(hits0, comp_in_q_hits); // dense arm never engages
         }
     }
+}
+
+test "dsv4: serial-equivalence lanes for unquantized DSpark (env-gated)" {
+    const model_z = std.c.getenv("DSV4_SERIAL_MODEL") orelse return;
+    const ids_z = std.c.getenv("DSV4_SERIAL_IDS") orelse return;
+    if (mlx.noGpuBackend()) return;
+    const allocator = testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const model_path = std.mem.span(model_z);
+
+    const readAll = struct {
+        fn f(io_: std.Io, alloc: std.mem.Allocator, path: []const u8) ![]u8 {
+            const file = try std.Io.Dir.openFileAbsolute(io_, path, .{});
+            defer file.close(io_);
+            var buf: [8192]u8 = undefined;
+            var reader = file.reader(io_, &buf);
+            return reader.interface.allocRemaining(alloc, .limited(1 << 20));
+        }
+    }.f;
+    const cfg_path = try std.fmt.allocPrint(allocator, "{s}/config.json", .{model_path});
+    defer allocator.free(cfg_path);
+    const cfg_json = try readAll(io, allocator, cfg_path);
+    defer allocator.free(cfg_json);
+    const cfg = try model.parseConfigFromJson(allocator, cfg_json);
+    var weights = try model.loadWeights(io, allocator, model_path);
+    defer weights.deinit();
+    const dw = try loadDsv4Weights(allocator, &cfg, &weights);
+    const stream = mlx.gpuStream();
+    defer _ = mlx.mlx_stream_free(stream);
+    var mdl = try initModel(allocator, &cfg, dw, stream);
+    defer mdl.deinit();
+    try testing.expect(mdl.n_mtp > 0);
+
+    var ids_list = std.ArrayList(u32).empty;
+    defer ids_list.deinit(allocator);
+    var ids_it = std.mem.splitScalar(u8, std.mem.span(ids_z), ',');
+    while (ids_it.next()) |raw| {
+        if (raw.len == 0) continue;
+        try ids_list.append(allocator, try std.fmt.parseInt(u32, raw, 10));
+    }
+    try testing.expect(ids_list.items.len > 1);
+    const ids = ids_list.items;
+
+    const Ops = struct {
+        fn argmax(values: []const f32) u32 {
+            var best: usize = 0;
+            for (values, 0..) |value, i| {
+                if (value > values[best]) best = i;
+            }
+            return @intCast(best);
+        }
+
+        fn digest(values: []const f32) u64 {
+            return std.hash.Wyhash.hash(0, std.mem.sliceAsBytes(values));
+        }
+
+        fn compareLogits(label: []const u8, a: []const f32, b: []const f32) bool {
+            var max_abs: f32 = 0;
+            for (a, b) |av, bv| max_abs = @max(max_abs, @abs(av - bv));
+            const same_top = argmax(a) == argmax(b);
+            const same_hash = digest(a) == digest(b);
+            std.debug.print("[serial-eq] {s}: top={} hash={} max_abs={e}\n", .{ label, same_top, same_hash, max_abs });
+            return same_top and max_abs <= 1e-4;
+        }
+    };
+    const Prepared = struct {
+        st: Dsv4DecodeState,
+        pre_logits: []f32,
+        t1: u32,
+    };
+    const prepare = struct {
+        fn f(m: *Dsv4Model, alloc: std.mem.Allocator, input: []const u32) !Prepared {
+            var st = try initDecodeState(m, alloc);
+            errdefer deinitDecodeState(&st);
+            const logits = try prefillIntoState(m, alloc, &st, input);
+            return .{ .st = st, .pre_logits = logits, .t1 = Ops.argmax(logits) };
+        }
+    }.f;
+
+    var ok = true;
+
+    // A: ordinary serial Gold reference.
+    var lane_a = try prepare(&mdl, allocator, ids);
+    defer {
+        allocator.free(lane_a.pre_logits);
+        deinitDecodeState(&lane_a.st);
+    }
+    const serial_next = try decodeStep(&mdl, allocator, &lane_a.st, lane_a.t1);
+    defer allocator.free(serial_next);
+    const serial_next_token = Ops.argmax(serial_next);
+    const serial_digest = fingerprintDecodeState(&lane_a.st);
+
+    // B: DSpark stages configured, but bypassed through ordinary decode.
+    var lane_b = try prepare(&mdl, allocator, ids);
+    defer {
+        allocator.free(lane_b.pre_logits);
+        deinitDecodeState(&lane_b.st);
+    }
+    const bypass_next = try decodeStep(&mdl, allocator, &lane_b.st, lane_b.t1);
+    defer allocator.free(bypass_next);
+    ok = Ops.compareLogits("B bypass prefill", lane_a.pre_logits, lane_b.pre_logits) and ok;
+    ok = Ops.compareLogits("B bypass decode", serial_next, bypass_next) and ok;
+    ok = std.meta.eql(serial_digest, fingerprintDecodeState(&lane_b.st)) and ok;
+
+    // C: begin/finish with no submitted draft. The verification row is still
+    // read so the state transition and fallback token are explicit.
+    var lane_c = try prepare(&mdl, allocator, ids);
+    defer {
+        allocator.free(lane_c.pre_logits);
+        deinitDecodeState(&lane_c.st);
+    }
+    const empty_ids = try allocator.alloc(u32, 1);
+    empty_ids[0] = lane_c.t1;
+    const empty_logits = try allocator.alloc(f32, 0);
+    const empty_conf = try allocator.alloc(f32, 0);
+    var empty_draft = DsparkDraft{ .ids = empty_ids, .len = 0, .logits = empty_logits, .confidence = empty_conf };
+    var empty_pending = try dsparkBeginWith(&mdl, allocator, &lane_c.st, lane_c.t1, &empty_draft);
+    const empty_verify = try toHostF32(allocator, empty_pending.vl_g, mdl.vocab, mdl.s);
+    defer allocator.free(empty_verify);
+    var empty_round = try dsparkFinish(&mdl, allocator, &lane_c.st, &empty_pending, 0, serial_next_token);
+    empty_round.deinit(allocator);
+    empty_pending.deinit();
+    empty_draft.deinit(allocator);
+    ok = Ops.compareLogits("C no-draft verification row", serial_next, empty_verify) and ok;
+    ok = std.meta.eql(serial_digest, fingerprintDecodeState(&lane_c.st)) and ok;
+
+    // D: one real draft round, force all drafts rejected, restore the entry
+    // snapshot, then take a fresh serial step.
+    var lane_d = try prepare(&mdl, allocator, ids);
+    defer {
+        allocator.free(lane_d.pre_logits);
+        deinitDecodeState(&lane_d.st);
+    }
+    var draft_d = try dsparkDraft(&mdl, allocator, &lane_d.st, lane_d.t1);
+    var pending_d = try dsparkBeginWith(&mdl, allocator, &lane_d.st, lane_d.t1, &draft_d);
+    restoreDecodeState(&lane_d.st, &pending_d.snap);
+    pending_d.deinit();
+    draft_d.deinit(allocator);
+    const fresh_fallback = try decodeStep(&mdl, allocator, &lane_d.st, lane_d.t1);
+    defer allocator.free(fresh_fallback);
+    ok = Ops.compareLogits("D restored fresh serial fallback", serial_next, fresh_fallback) and ok;
+    ok = std.meta.eql(serial_digest, fingerprintDecodeState(&lane_d.st)) and ok;
+
+    // E: one real draft round, force rejection, but use the current
+    // verification-logit fallback before finish.
+    var lane_e = try prepare(&mdl, allocator, ids);
+    defer {
+        allocator.free(lane_e.pre_logits);
+        deinitDecodeState(&lane_e.st);
+    }
+    var draft_e = try dsparkDraft(&mdl, allocator, &lane_e.st, lane_e.t1);
+    var pending_e = try dsparkBeginWith(&mdl, allocator, &lane_e.st, lane_e.t1, &draft_e);
+    const verify_e = try toHostF32(allocator, pending_e.vl_g, mdl.vocab, mdl.s);
+    defer allocator.free(verify_e);
+    const verify_next = Ops.argmax(verify_e[0..mdl.vocab]);
+    var round_e = try dsparkFinish(&mdl, allocator, &lane_e.st, &pending_e, 0, verify_next);
+    round_e.deinit(allocator);
+    pending_e.deinit();
+    draft_e.deinit(allocator);
+    ok = Ops.compareLogits("E verification fallback row", serial_next, verify_e[0..mdl.vocab]) and ok;
+    ok = verify_next == serial_next_token and ok;
+    ok = std.meta.eql(serial_digest, fingerprintDecodeState(&lane_e.st)) and ok;
+
+    // F: normal unquantized DSpark. Compare every committed round token and
+    // the next-token row against a fresh serial state.
+    var lane_f = try prepare(&mdl, allocator, ids);
+    defer {
+        allocator.free(lane_f.pre_logits);
+        deinitDecodeState(&lane_f.st);
+    }
+    var serial_f = try prepare(&mdl, allocator, ids);
+    defer {
+        allocator.free(serial_f.pre_logits);
+        deinitDecodeState(&serial_f.st);
+    }
+    var round_f = try dsparkRound(&mdl, allocator, &lane_f.st, lane_f.t1);
+    defer round_f.deinit(allocator);
+    var expected = serial_f.t1;
+    var serial_after: []f32 = &.{};
+    defer if (serial_after.len > 0) allocator.free(serial_after);
+    for (round_f.tokens, 0..) |token, i| {
+        if (token != expected) {
+            std.debug.print("[serial-eq] F token mismatch i={d} got={d} want={d}\n", .{ i, token, expected });
+            ok = false;
+        }
+        if (serial_after.len > 0) allocator.free(serial_after);
+        serial_after = try decodeStep(&mdl, allocator, &serial_f.st, expected);
+        expected = Ops.argmax(serial_after);
+    }
+    if (round_f.next_token != expected) {
+        std.debug.print("[serial-eq] F next mismatch got={d} want={d}\n", .{ round_f.next_token, expected });
+        ok = false;
+    }
+    ok = std.meta.eql(fingerprintDecodeState(&lane_f.st), fingerprintDecodeState(&serial_f.st)) and ok;
+    std.debug.print("[serial-eq] F accepted={d} committed={d} attempts={d}\n", .{ round_f.accepted, round_f.tokens.len, 0 });
+
+    try testing.expect(ok);
 }
