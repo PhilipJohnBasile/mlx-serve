@@ -4751,7 +4751,7 @@ pub fn fingerprintDecodeState(st: *const Dsv4DecodeState) Dsv4StateFingerprint {
     };
 }
 
-const DifferentialStage = enum(u8) { attention, moe };
+const DifferentialStage = enum(u8) { query_projection, query_norm, query, key_value, attention, moe };
 
 const DifferentialRecord = struct {
     call: usize,
@@ -5807,15 +5807,18 @@ fn attentionDecodeGpu(m: *const Dsv4Model, alloc: std.mem.Allocator, st: *Dsv4De
     const q_rot = blk: {
         const q_flat = try gpuQmmB(&ly.wq_b, qr_n, m.s);
         defer _ = mlx.mlx_array_free(q_flat);
+        try captureDifferentialStage(m, q_flat, li, .query_projection, 1);
         if (try decChainKernel(m, q_flat, nh, hd, rd, m.ones_hd_g, 0, false, rr)) |fused| break :blk fused;
         const qshape = [_]c_int{ @intCast(nh), @intCast(hd) };
         const q_r = try gpuReshape(q_flat, &qshape, m.s);
         defer _ = mlx.mlx_array_free(q_r);
         const q_rms = try gpuRms(q_r, m.ones_hd_g, m.eps, m.s); // unweighted per-head RMS
         defer _ = mlx.mlx_array_free(q_rms);
+        try captureDifferentialStage(m, q_rms, li, .query_norm, 1);
         break :blk try gpuRopeTail(q_rms, rd, rr.cos, rr.sin, false, m.s);
     };
     defer _ = mlx.mlx_array_free(q_rot);
+    try captureDifferentialStage(m, q_rot, li, .query, 1);
 
     // kv chain: wkv → kv_norm → rope → fp8 sim on the non-rope dims → append
     {
@@ -5823,6 +5826,7 @@ fn attentionDecodeGpu(m: *const Dsv4Model, alloc: std.mem.Allocator, st: *Dsv4De
         defer _ = mlx.mlx_array_free(kv0);
         if (try decChainKernel(m, kv0, 1, hd, rd, h.kv_norm_g, 1, false, rr)) |kv_fused| {
             defer _ = mlx.mlx_array_free(kv_fused);
+            try captureDifferentialStage(m, kv_fused, li, .key_value, 1);
             try ls.kv_gpu.appendGpu(kv_fused, 1, m.s);
         } else {
         const kv_n = try gpuRms(kv0, h.kv_norm_g, m.eps, m.s);
@@ -5837,6 +5841,7 @@ fn attentionDecodeGpu(m: *const Dsv4Model, alloc: std.mem.Allocator, st: *Dsv4De
         defer _ = mlx.mlx_array_free(tail);
         const kv_fin = try gpuConcat2(head_sim, tail, 1, m.s);
         defer _ = mlx.mlx_array_free(kv_fin);
+        try captureDifferentialStage(m, kv_fin, li, .key_value, 1);
         try ls.kv_gpu.appendGpu(kv_fin, 1, m.s);
         }
     }
@@ -7842,14 +7847,17 @@ fn attentionBatch(m: *Dsv4Model, alloc: std.mem.Allocator, st: *Dsv4DecodeState,
     const q3 = blk: {
         const q_flat = try gpuQmmB(&ly.wq_b, qr_n, m.s);
         defer _ = mlx.mlx_array_free(q_flat);
+        try captureDifferentialStage(m, q_flat, li, .query_projection, C);
         const qshape = [_]c_int{ cc, @intCast(nh), @intCast(hd) };
         const q_r = try gpuReshape(q_flat, &qshape, m.s);
         defer _ = mlx.mlx_array_free(q_r);
         const q_rms = try gpuRms(q_r, m.ones_hd_g, m.eps, m.s);
         defer _ = mlx.mlx_array_free(q_rms);
+        try captureDifferentialStage(m, q_rms, li, .query_norm, C);
         break :blk try gpuRopeTailRows(q_rms, rd, rr.cos, rr.sin, false, m.s);
     };
     defer _ = mlx.mlx_array_free(q3);
+    try captureDifferentialStage(m, q3, li, .query, C);
 
     // kv chain [C, hd] → append C rows
     {
@@ -7867,6 +7875,7 @@ fn attentionBatch(m: *Dsv4Model, alloc: std.mem.Allocator, st: *Dsv4DecodeState,
         defer _ = mlx.mlx_array_free(tail);
         const kv_fin = try gpuConcat2(head_sim, tail, 1, m.s);
         defer _ = mlx.mlx_array_free(kv_fin);
+        try captureDifferentialStage(m, kv_fin, li, .key_value, C);
         try ls.kv_gpu.appendGpu(kv_fin, C, m.s);
     }
 
