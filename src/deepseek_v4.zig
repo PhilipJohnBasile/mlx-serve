@@ -10554,26 +10554,28 @@ test "dsv4: serial-equivalence lanes for unquantized DSpark (env-gated)" {
         allocator.free(serial_f.pre_logits);
         deinitDecodeState(&serial_f.st);
     }
-    var round_f = try dsparkRound(&mdl, allocator, &lane_f.st, lane_f.t1);
-    defer round_f.deinit(allocator);
     var expected = serial_f.t1;
     var serial_after: []f32 = &.{};
     defer if (serial_after.len > 0) allocator.free(serial_after);
-    for (round_f.tokens, 0..) |token, i| {
-        if (token != expected) {
-            std.debug.print("[serial-eq] F token mismatch i={d} got={d} want={d}\n", .{ i, token, expected });
+    for (0..4) |round_index| {
+        var round_f = try dsparkRound(&mdl, allocator, &lane_f.st, expected);
+        for (round_f.tokens, 0..) |token, i| {
+            if (token != expected) {
+                std.debug.print("[serial-eq] F round={d} token mismatch i={d} got={d} want={d}\n", .{ round_index, i, token, expected });
+                ok = false;
+            }
+            if (serial_after.len > 0) allocator.free(serial_after);
+            serial_after = try decodeStep(&mdl, allocator, &serial_f.st, expected);
+            expected = Ops.argmax(serial_after);
+        }
+        if (round_f.next_token != expected) {
+            std.debug.print("[serial-eq] F round={d} next mismatch got={d} want={d}\n", .{ round_index, round_f.next_token, expected });
             ok = false;
         }
-        if (serial_after.len > 0) allocator.free(serial_after);
-        serial_after = try decodeStep(&mdl, allocator, &serial_f.st, expected);
-        expected = Ops.argmax(serial_after);
+        ok = std.meta.eql(fingerprintDecodeState(&lane_f.st), fingerprintDecodeState(&serial_f.st)) and ok;
+        std.debug.print("[serial-eq] F round={d} accepted={d} committed={d}\n", .{ round_index, round_f.accepted, round_f.tokens.len });
+        round_f.deinit(allocator);
     }
-    if (round_f.next_token != expected) {
-        std.debug.print("[serial-eq] F next mismatch got={d} want={d}\n", .{ round_f.next_token, expected });
-        ok = false;
-    }
-    ok = std.meta.eql(fingerprintDecodeState(&lane_f.st), fingerprintDecodeState(&serial_f.st)) and ok;
-    std.debug.print("[serial-eq] F accepted={d} committed={d} attempts={d}\n", .{ round_f.accepted, round_f.tokens.len, 0 });
 
     try testing.expect(ok);
 }

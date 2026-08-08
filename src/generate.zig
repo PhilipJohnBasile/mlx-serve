@@ -8769,6 +8769,78 @@ test "dsparkArmFor: greedy and stochastic arms gate on clean sampling, kill swit
     try testing.expect(!Generator.dsparkStochEnabledFromEnv("0"));
 }
 
+test "dsv4: Generator DSpark serial equivalence (env-gated)" {
+    const model_z = std.c.getenv("DSV4_GENERATOR_SERIAL_MODEL") orelse return;
+    const ids_z = std.c.getenv("DSV4_GENERATOR_SERIAL_IDS") orelse return;
+    if (mlx.noGpuBackend()) return;
+    const allocator = testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const path = std.mem.span(model_z);
+    const readAll = struct {
+        fn f(io_: std.Io, alloc: std.mem.Allocator, p: []const u8) ![]u8 {
+            const file = try std.Io.Dir.openFileAbsolute(io_, p, .{});
+            defer file.close(io_);
+            var rb: [8192]u8 = undefined;
+            var rs = file.reader(io_, &rb);
+            return rs.interface.allocRemaining(alloc, .limited(1 << 20));
+        }
+    }.f;
+    const cfg_path = try std.fmt.allocPrint(allocator, "{s}/config.json", .{path});
+    defer allocator.free(cfg_path);
+    const cfg_json = try readAll(io, allocator, cfg_path);
+    defer allocator.free(cfg_json);
+    const cfg = try model_mod.parseConfigFromJson(allocator, cfg_json);
+    var weights = try model_mod.loadWeights(io, allocator, path);
+    defer weights.deinit();
+    var prompt = std.ArrayList(u32).empty;
+    defer prompt.deinit(allocator);
+    var it = std.mem.splitScalar(u8, std.mem.span(ids_z), ',');
+    while (it.next()) |raw| if (raw.len > 0) try prompt.append(allocator, try std.fmt.parseInt(u32, raw, 10));
+    try testing.expect(prompt.items.len > 1);
+    var tok_dummy: Tokenizer = undefined;
+    const greedy = SamplingParams{ .temperature = 0.0 };
+    const eos_ids = cfg.eosTokenSlice();
+
+    _ = setenv("MLX_SERVE_DSV4_DSPARK", "0", 1);
+    var serial_xfm = try Transformer.init(io, allocator, cfg, &weights);
+    defer serial_xfm.deinit();
+    var serial_gen = try Generator.initWithOptions(io, allocator, &serial_xfm, &tok_dummy, prompt.items, 128, greedy, eos_ids, .{
+        .skip_lazy_preforward = true,
+    });
+    defer serial_gen.deinit(allocator);
+    var serial = std.ArrayList(u32).empty;
+    defer serial.deinit(allocator);
+    while (serial.items.len < 128) {
+        const token = (try serial_gen.next(allocator)) orelse break;
+        try serial.append(allocator, token);
+    }
+
+    _ = setenv("MLX_SERVE_DSV4_DSPARK", "1", 1);
+    var ds_xfm = try Transformer.init(io, allocator, cfg, &weights);
+    defer ds_xfm.deinit();
+    var ds_gen = try Generator.initWithOptions(io, allocator, &ds_xfm, &tok_dummy, prompt.items, 128, greedy, eos_ids, .{
+        .mtp_enabled = true,
+        .skip_lazy_preforward = true,
+    });
+    defer ds_gen.deinit(allocator);
+    var ds = std.ArrayList(u32).empty;
+    defer ds.deinit(allocator);
+    while (ds.items.len < 128) {
+        const result = (try ds_gen.nextDspark(allocator)) orelse break;
+        defer allocator.free(result.tokens);
+        try ds.appendSlice(allocator, result.tokens);
+    }
+    try testing.expectEqual(serial.items.len, ds.items.len);
+    for (serial.items, ds.items, 0..) |want, got, i| {
+        if (want != got) {
+            std.debug.print("[generator-serial-eq] first divergence at {d}: serial={d} dspark={d} rounds={d} accepts={d}\n", .{ i, want, got, ds_gen.dspark_attempted, ds_gen.dspark_accepted_tokens });
+            try testing.expect(false);
+        }
+    }
+    try testing.expect(ds_gen.dspark_attempted > 0);
+    try testing.expectEqual(ds_gen.ctx.cache.step, ds_xfm.dsv4.?.dec_state.?.n);
+}
+
 test "dsv4: stochastic dspark engages at sampled temperature and keeps the exit invariant (DSV4_MINI)" {
     // The motivating traffic shape: the checkpoint ships generation_config
     // temp 0.6 and agent CLIs omit temperature, so every real agent request
