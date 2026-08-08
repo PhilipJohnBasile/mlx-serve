@@ -2030,6 +2030,17 @@ pub const Generator = struct {
         else
             try dsv4_mod.dsparkRound(mdl, allocator, &mdl.dec_state.?, t1);
         errdefer round.deinit(allocator);
+        const remaining: usize = @intCast(self.max_tokens -| self.completion_tokens);
+        if (round.tokens.len > remaining) {
+            const limited = try allocator.alloc(u32, remaining);
+            @memcpy(limited, round.tokens[0..remaining]);
+            allocator.free(round.tokens);
+            round.tokens = limited;
+            round.accepted = if (remaining > 0)
+                @min(round.accepted, @as(u32, @intCast(remaining - 1)))
+            else
+                0;
+        }
         // dsparkRound advanced the module state — mirror it on the shell
         // cache verbatim so a later serial fallback (or the fresh-request
         // check keying on step==0) sees a consistent position. Generator.step
