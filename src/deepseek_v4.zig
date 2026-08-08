@@ -1574,7 +1574,6 @@ fn attentionForward(m: *const Dsv4Model, alloc: std.mem.Allocator, li: usize, x:
     return try qmmHost(alloc, &ly.wo_b, ored, seq, m.o_groups * m.o_lora, m.dim, m.s);
 }
 
-
 /// Grouped low-rank O via the cached [og, gin, ol] operands: o comes in
 /// token-major [s, og, gin]; returns [s, og*ol] host f32.
 fn woAApply(m: *const Dsv4Model, alloc: std.mem.Allocator, li: usize, o: []const f32, s_len: usize) ![]f32 {
@@ -1673,6 +1672,19 @@ fn woAMatmul(m: *const Dsv4Model, li: usize, ob: mlx.mlx_array) !mlx.mlx_array {
     return try gpuOp2(mlx.mlx_matmul, ob, m.wo_a_deq[li], m.s);
 }
 
+/// Verification-only grouped wo_a route: keep the per-token M=1 QMM kernel
+/// while submitting every group/token row in one lazy graph. The normal
+/// prefill route continues through woAMatmul unchanged.
+fn woAMatmulBatchedM1(m: *const Dsv4Model, li: usize, ob: mlx.mlx_array, rows: usize) !mlx.mlx_array {
+    if (m.wo_a_q3.len == 0)
+        return gpuGroupedMatmulBatchedM1(ob, m.wo_a_deq[li], rows, m.s);
+    if (!wo_qmm_logged) {
+        wo_qmm_logged = true;
+        log.info("dsv4: wo_a batched-qmm path engaged\n", .{});
+    }
+    return gpuGroupedQmmBatchedM1(&m.wo_a_q3[li], &m.dw.layers[li].wo_a.qp, ob, rows, m.s);
+}
+
 /// GPU window emission kill switch (`MLX_SERVE_DSV4_GPU_EMIT=0` → host
 /// emission with the in-layer blocking sync, the pre-GPU behavior). Cached.
 var gpu_emit_state: ?bool = null;
@@ -1722,6 +1734,21 @@ fn decChainEnabled() bool {
 /// Test hook: force the decode-chain arm on/off (null = re-read the env).
 fn decChainSetForTest(v: ?bool) void {
     dec_chain_state = v;
+}
+
+/// Multi-row decode-chain kill switch (`MLX_SERVE_DSV4_DEC_CHAIN_ROWS=0` →
+/// retain the direct one-row kernel loop). This leaves the established decode
+/// kernel controlled solely by MLX_SERVE_DSV4_DEC_CHAIN. Cached per process.
+var dec_chain_rows_state: ?bool = null;
+fn decChainRowsEnabled() bool {
+    if (dec_chain_rows_state) |v| return v;
+    const v = if (std.c.getenv("MLX_SERVE_DSV4_DEC_CHAIN_ROWS")) |e| e[0] != '0' else true;
+    dec_chain_rows_state = v;
+    return v;
+}
+/// Test hook: force only the grid-z rows arm (null = re-read the environment).
+fn decChainRowsSetForTest(v: ?bool) void {
+    dec_chain_rows_state = v;
 }
 
 /// Fused MoE gate+up gather — OPT-IN (`MLX_SERVE_DSV4_MOE_GATEUP=1`): the
@@ -1776,9 +1803,11 @@ var comp_in_q_logged: bool = false;
 /// which must all see the SAME weights or spec-on/off diverges at temp 0,
 /// the laguna rule), dense bf16 otherwise. The copies exist only when
 /// --decode-attn-quant was on at load, so this is a null-check per call.
-fn compInProj(m: *const Dsv4Model, h: *const HostLayer, li: usize, x_g: mlx.mlx_array, C: usize) !mlx.mlx_array {
+fn compInProj(m: *const Dsv4Model, h: *const HostLayer, li: usize, x_g: mlx.mlx_array, C: usize, serial_verify_m1: bool) !mlx.mlx_array {
     if (C <= 32 and m.comp_in_q.len > li) {
         if (m.comp_in_q[li]) |q| {
+            if (serial_verify_m1)
+                return qmmNativeBatchedM1(x_g, q.w, q.s, q.b, 32, 8, C, m.s);
             var out = mlx.mlx_array_new();
             errdefer _ = mlx.mlx_array_free(out);
             try mlx.check(mlx.mlx_quantized_matmul(&out, x_g, q.w, q.s, q.b, true, mlx.mlx_optional_int.some(32), mlx.mlx_optional_int.some(8), "affine", m.s));
@@ -1790,7 +1819,10 @@ fn compInProj(m: *const Dsv4Model, h: *const HostLayer, li: usize, x_g: mlx.mlx_
             return out;
         }
     }
-    return try gpuOp2(mlx.mlx_matmul, x_g, h.comp_in_t.?, m.s);
+    return if (serial_verify_m1)
+        try gpuMatmulBatchedM1(x_g, h.comp_in_t.?, C, m.s)
+    else
+        try gpuOp2(mlx.mlx_matmul, x_g, h.comp_in_t.?, m.s);
 }
 
 /// Lazy pipelined decode kill switch (`MLX_SERVE_DSV4_LAZY_DECODE=0` → the
@@ -3522,8 +3554,8 @@ test "dsv4: main_hidden capture matches the oracle across both prefill and decod
                     sl[2] += wf * wf;
                 }
                 std.debug.print("main_hidden {s}: cos={d:.6} (floor {d:.2}) t0={d:.6} t1={d:.6}\n", .{
-                    key,                                                cos,
-                    floor,                                              stats[0][0] / (@sqrt(stats[0][1]) * @sqrt(stats[0][2]) + 1e-30),
+                    key,                                                             cos,
+                    floor,                                                           stats[0][0] / (@sqrt(stats[0][1]) * @sqrt(stats[0][2]) + 1e-30),
                     stats[1][0] / (@sqrt(stats[1][1]) * @sqrt(stats[1][2]) + 1e-30),
                 });
                 for (0..6) |i| {
@@ -4751,7 +4783,281 @@ pub fn fingerprintDecodeState(st: *const Dsv4DecodeState) Dsv4StateFingerprint {
     };
 }
 
-const DifferentialStage = enum(u8) { query_projection, query_norm, query, key_value, attention, moe };
+fn hashStateScalar(hasher: *std.hash.Wyhash, value: anytype) void {
+    hasher.update(std.mem.asBytes(&value));
+}
+
+fn hashStateF32(hasher: *std.hash.Wyhash, values: []const f32) void {
+    hashStateScalar(hasher, values.len);
+    hasher.update(std.mem.sliceAsBytes(values));
+}
+
+/// Hash the semantically live rows, not spare capacity, of a GPU-backed ring.
+/// This is deliberately test-only diagnostic work: it evaluates a tensor in
+/// order to prove that a no-capture lazy verification graph reached the same
+/// cache contents as the serial oracle.
+fn hashGpuRowsContent(hasher: *std.hash.Wyhash, alloc: std.mem.Allocator, rows: *const GpuRows, s: mlx.mlx_stream) !void {
+    hashStateScalar(hasher, rows.used);
+    hashStateScalar(hasher, rows.width);
+    if (rows.used == 0) return;
+    const live = try rows.sliceRows(0, rows.used, s);
+    defer _ = mlx.mlx_array_free(live);
+    const host = try toHostF32(alloc, live, rows.used * rows.width, s);
+    defer alloc.free(host);
+    hashStateF32(hasher, host);
+}
+
+fn hashCompDecStateContent(hasher: *std.hash.Wyhash, cs: *const CompDecState) void {
+    hashStateScalar(hasher, cs.rows);
+    hashStateScalar(hasher, cs.width);
+    hashStateF32(hasher, cs.kv_pend);
+    hashStateF32(hasher, cs.sc_pend);
+    hashStateF32(hasher, cs.cache.items);
+}
+
+/// Full state-content witness for a serial-versus-batched test. The compact
+/// fingerprint above is useful for cheap diagnostics; this additionally
+/// commits the live cache/ring values and deferred rows to a single digest.
+fn hashDecodeStateContent(m: *const Dsv4Model, st: *const Dsv4DecodeState, alloc: std.mem.Allocator) !u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashStateScalar(&hasher, st.n);
+    hashStateScalar(&hasher, st.layers.len);
+    for (st.layers) |*ls| {
+        hashStateF32(&hasher, ls.kv.items);
+        try hashGpuRowsContent(&hasher, alloc, &ls.kv_gpu, m.s);
+        try hashGpuRowsContent(&hasher, alloc, &ls.comp_gpu, m.s);
+        try hashGpuRowsContent(&hasher, alloc, &ls.idx_gpu, m.s);
+        hashStateScalar(&hasher, ls.comp != null);
+        if (ls.comp) |*cs| hashCompDecStateContent(&hasher, cs);
+        hashStateScalar(&hasher, ls.idx_comp != null);
+        if (ls.idx_comp) |*cs| hashCompDecStateContent(&hasher, cs);
+    }
+    hashStateScalar(&hasher, st.pending.items.len);
+    for (st.pending.items) |pending| {
+        hashStateScalar(&hasher, pending.li);
+        hashStateScalar(&hasher, pending.pos);
+        const count = mlx.mlx_array_size(pending.arr);
+        hashStateScalar(&hasher, count);
+        if (count > 0) {
+            const host = try toHostF32(alloc, pending.arr, count, m.s);
+            defer alloc.free(host);
+            hashStateF32(&hasher, host);
+        }
+    }
+    hashStateScalar(&hasher, st.dspark != null);
+    if (st.dspark) |*ds| {
+        hashStateScalar(&hasher, ds.main_kv.len);
+        for (ds.main_kv) |*ring| try hashGpuRowsContent(&hasher, alloc, ring, m.s);
+        hashStateScalar(&hasher, ds.has_mh);
+        if (ds.has_mh) {
+            const count = mlx.mlx_array_size(ds.mh_last);
+            hashStateScalar(&hasher, count);
+            const host = try toHostF32(alloc, ds.mh_last, count, m.s);
+            defer alloc.free(host);
+            hashStateF32(&hasher, host);
+        }
+    }
+    return hasher.final();
+}
+
+/// Print the first bit-level state difference. A numeric comparison alone is
+/// insufficient here: a signed zero or NaN payload can change a raw tensor
+/// witness without changing a max-abs diagnostic.
+fn reportStateF32Difference(component: []const u8, layer: ?usize, left: []const f32, right: []const f32) bool {
+    if (left.len != right.len) {
+        if (layer) |li| {
+            std.debug.print("[batch-state] layer={d} component={s} length mismatch serial={d} batch={d}\n", .{ li, component, left.len, right.len });
+        } else {
+            std.debug.print("[batch-state] component={s} length mismatch serial={d} batch={d}\n", .{ component, left.len, right.len });
+        }
+        return false;
+    }
+    var first: ?usize = null;
+    var max_abs: f32 = 0;
+    for (left, right, 0..) |serial, batch, i| {
+        const serial_bits: u32 = @bitCast(serial);
+        const batch_bits: u32 = @bitCast(batch);
+        if (serial_bits != batch_bits) {
+            if (first == null) first = i;
+            max_abs = @max(max_abs, @abs(serial - batch));
+        }
+    }
+    const first_index = first orelse return true;
+    const serial = left[first_index];
+    const batch = right[first_index];
+    const serial_bits: u32 = @bitCast(serial);
+    const batch_bits: u32 = @bitCast(batch);
+    if (layer) |li| {
+        std.debug.print("[batch-state] layer={d} component={s} first={d} serial={e} (0x{x}) batch={e} (0x{x}) numeric_equal={} max_abs={e}\n", .{
+            li,
+            component,
+            first_index,
+            serial,
+            serial_bits,
+            batch,
+            batch_bits,
+            serial == batch,
+            max_abs,
+        });
+    } else {
+        std.debug.print("[batch-state] component={s} first={d} serial={e} (0x{x}) batch={e} (0x{x}) numeric_equal={} max_abs={e}\n", .{
+            component,
+            first_index,
+            serial,
+            serial_bits,
+            batch,
+            batch_bits,
+            serial == batch,
+            max_abs,
+        });
+    }
+    return false;
+}
+
+fn reportGpuRowsContentDifference(m: *const Dsv4Model, alloc: std.mem.Allocator, layer: ?usize, component: []const u8, left: *const GpuRows, right: *const GpuRows) !bool {
+    if (left.used != right.used or left.width != right.width) {
+        if (layer) |li| {
+            std.debug.print("[batch-state] layer={d} component={s} geometry mismatch serial_used={d} batch_used={d} serial_width={d} batch_width={d}\n", .{ li, component, left.used, right.used, left.width, right.width });
+        } else {
+            std.debug.print("[batch-state] component={s} geometry mismatch serial_used={d} batch_used={d} serial_width={d} batch_width={d}\n", .{ component, left.used, right.used, left.width, right.width });
+        }
+        return false;
+    }
+    if (left.used == 0) return true;
+    const left_live = try left.sliceRows(0, left.used, m.s);
+    defer _ = mlx.mlx_array_free(left_live);
+    const right_live = try right.sliceRows(0, right.used, m.s);
+    defer _ = mlx.mlx_array_free(right_live);
+    const left_host = try toHostF32(alloc, left_live, left.used * left.width, m.s);
+    defer alloc.free(left_host);
+    const right_host = try toHostF32(alloc, right_live, right.used * right.width, m.s);
+    defer alloc.free(right_host);
+    return reportStateF32Difference(component, layer, left_host, right_host);
+}
+
+fn reportCompDecStateContentDifference(layer: usize, component: []const u8, left: ?*const CompDecState, right: ?*const CompDecState) bool {
+    if ((left == null) != (right == null)) {
+        std.debug.print("[batch-state] layer={d} component={s} presence mismatch serial={} batch={}\n", .{ layer, component, left != null, right != null });
+        return false;
+    }
+    const serial = left orelse return true;
+    const batch = right.?;
+    if (serial.rows != batch.rows or serial.width != batch.width) {
+        std.debug.print("[batch-state] layer={d} component={s} geometry mismatch serial_rows={d} batch_rows={d} serial_width={d} batch_width={d}\n", .{ layer, component, serial.rows, batch.rows, serial.width, batch.width });
+        return false;
+    }
+    if (!reportStateF32Difference("comp.kv_pend", layer, serial.kv_pend, batch.kv_pend)) return false;
+    if (!reportStateF32Difference("comp.sc_pend", layer, serial.sc_pend, batch.sc_pend)) return false;
+    return reportStateF32Difference("comp.cache", layer, serial.cache.items, batch.cache.items);
+}
+
+/// Locate the first raw state witness mismatch after a serial/batched test.
+/// This deliberately walks only the same semantic fields that
+/// `hashDecodeStateContent` commits, in the same order.
+fn reportFirstStateContentDifference(m: *const Dsv4Model, serial: *const Dsv4DecodeState, batch: *const Dsv4DecodeState, alloc: std.mem.Allocator) !bool {
+    if (serial.n != batch.n) {
+        std.debug.print("[batch-state] n mismatch serial={d} batch={d}\n", .{ serial.n, batch.n });
+        return false;
+    }
+    if (serial.layers.len != batch.layers.len) {
+        std.debug.print("[batch-state] layer count mismatch serial={d} batch={d}\n", .{ serial.layers.len, batch.layers.len });
+        return false;
+    }
+    for (serial.layers, batch.layers, 0..) |*serial_layer, *batch_layer, li| {
+        if (!reportStateF32Difference("kv_host", li, serial_layer.kv.items, batch_layer.kv.items)) return false;
+        if (!try reportGpuRowsContentDifference(m, alloc, li, "kv_gpu", &serial_layer.kv_gpu, &batch_layer.kv_gpu)) return false;
+        if (!try reportGpuRowsContentDifference(m, alloc, li, "comp_gpu", &serial_layer.comp_gpu, &batch_layer.comp_gpu)) return false;
+        if (!try reportGpuRowsContentDifference(m, alloc, li, "idx_gpu", &serial_layer.idx_gpu, &batch_layer.idx_gpu)) return false;
+        if (!reportCompDecStateContentDifference(li, "comp", if (serial_layer.comp) |*v| v else null, if (batch_layer.comp) |*v| v else null)) return false;
+        if (!reportCompDecStateContentDifference(li, "idx_comp", if (serial_layer.idx_comp) |*v| v else null, if (batch_layer.idx_comp) |*v| v else null)) return false;
+    }
+    if (serial.pending.items.len != batch.pending.items.len) {
+        std.debug.print("[batch-state] pending length mismatch serial={d} batch={d}\n", .{ serial.pending.items.len, batch.pending.items.len });
+        return false;
+    }
+    for (serial.pending.items, batch.pending.items, 0..) |serial_pending, batch_pending, i| {
+        if (serial_pending.li != batch_pending.li or serial_pending.pos != batch_pending.pos) {
+            std.debug.print("[batch-state] pending[{d}] identity mismatch serial=({d},{d}) batch=({d},{d})\n", .{ i, serial_pending.li, serial_pending.pos, batch_pending.li, batch_pending.pos });
+            return false;
+        }
+        const serial_count = mlx.mlx_array_size(serial_pending.arr);
+        const batch_count = mlx.mlx_array_size(batch_pending.arr);
+        if (serial_count != batch_count) {
+            std.debug.print("[batch-state] pending[{d}] tensor length mismatch serial={d} batch={d}\n", .{ i, serial_count, batch_count });
+            return false;
+        }
+        const serial_host = try toHostF32(alloc, serial_pending.arr, serial_count, m.s);
+        defer alloc.free(serial_host);
+        const batch_host = try toHostF32(alloc, batch_pending.arr, batch_count, m.s);
+        defer alloc.free(batch_host);
+        if (!reportStateF32Difference("pending", null, serial_host, batch_host)) return false;
+    }
+    if ((serial.dspark == null) != (batch.dspark == null)) {
+        std.debug.print("[batch-state] dspark presence mismatch serial={} batch={}\n", .{ serial.dspark != null, batch.dspark != null });
+        return false;
+    }
+    const serial_ds = serial.dspark orelse return true;
+    const batch_ds = batch.dspark.?;
+    if (serial_ds.main_kv.len != batch_ds.main_kv.len) {
+        std.debug.print("[batch-state] dspark ring count mismatch serial={d} batch={d}\n", .{ serial_ds.main_kv.len, batch_ds.main_kv.len });
+        return false;
+    }
+    for (serial_ds.main_kv, batch_ds.main_kv, 0..) |*serial_ring, *batch_ring, stage| {
+        if (!try reportGpuRowsContentDifference(m, alloc, null, "dspark.main_kv", serial_ring, batch_ring)) {
+            std.debug.print("[batch-state] dspark main_kv stage={d}\n", .{stage});
+            return false;
+        }
+    }
+    if (serial_ds.has_mh != batch_ds.has_mh) {
+        std.debug.print("[batch-state] dspark mh_last presence mismatch serial={} batch={}\n", .{ serial_ds.has_mh, batch_ds.has_mh });
+        return false;
+    }
+    if (serial_ds.has_mh) {
+        const serial_count = mlx.mlx_array_size(serial_ds.mh_last);
+        const batch_count = mlx.mlx_array_size(batch_ds.mh_last);
+        if (serial_count != batch_count) {
+            std.debug.print("[batch-state] dspark mh_last length mismatch serial={d} batch={d}\n", .{ serial_count, batch_count });
+            return false;
+        }
+        const serial_host = try toHostF32(alloc, serial_ds.mh_last, serial_count, m.s);
+        defer alloc.free(serial_host);
+        const batch_host = try toHostF32(alloc, batch_ds.mh_last, batch_count, m.s);
+        defer alloc.free(batch_host);
+        if (!reportStateF32Difference("dspark.mh_last", null, serial_host, batch_host)) return false;
+    }
+    return true;
+}
+
+const DifferentialStage = enum(u8) {
+    attention_hc_pre_y,
+    attention_hc_pack,
+    attention_hc_post_coeff,
+    attention_hc_residual_coeff,
+    query_a_projection,
+    query_a_norm,
+    query_projection,
+    query_norm,
+    query,
+    index_query_projection,
+    index_query,
+    key_value,
+    compressor_input,
+    attention_value_mix,
+    attention_inverse_rope,
+    attention_output_input,
+    attention_output_a,
+    attention_output_b,
+    attention,
+    moe_gate_scores,
+    moe_routed_down,
+    moe_routed,
+    moe_shared,
+    moe_output,
+    moe,
+    head_mix,
+    head_collapse,
+    head_norm,
+};
 
 const DifferentialRecord = struct {
     call: usize,
@@ -5021,6 +5327,197 @@ fn gpuQmmB(q: *const Q, x: mlx.mlx_array, s: mlx.mlx_stream) !mlx.mlx_array {
     var out = mlx.mlx_array_new();
     try mlx.check(mlx.mlx_astype(&out, y, .float32, s));
     return out;
+}
+
+/// Give a rank-2 Q tensor a singleton batch axis. quantized_matmul broadcasts
+/// that axis over the C M=1 rows without materializing C weight views.
+fn gpuQmmSingletonBatchView(q_member: mlx.mlx_array, s: mlx.mlx_stream) !mlx.mlx_array {
+    std.debug.assert(mlx.mlx_array_ndim(q_member) == 2);
+    const shape = mlx.mlx_array_shape(q_member);
+    const one_shape = [_]c_int{ 1, shape[0], shape[1] };
+    return gpuReshape(q_member, &one_shape, s);
+}
+
+/// Give each [og, ol, x] grouped wo_a member a singleton C axis. The QMM
+/// operation broadcasts that axis over C while preserving group as a batch.
+fn gpuGroupedQmmSingletonBatchView(q_member: mlx.mlx_array, s: mlx.mlx_stream) !mlx.mlx_array {
+    std.debug.assert(mlx.mlx_array_ndim(q_member) == 3);
+    const shape = mlx.mlx_array_shape(q_member);
+    const one_shape = [_]c_int{ shape[0], 1, shape[1], shape[2] };
+    return gpuReshape(q_member, &one_shape, s);
+}
+
+/// One batched QMM whose batch dimension is C while matrix-M stays 1. This
+/// selects the serial qmv kernel without constructing C independent graphs.
+/// The input stays in its native dtype and the native QMM output is returned.
+fn qmmNativeBatchedM1(
+    x: mlx.mlx_array,
+    w: mlx.mlx_array,
+    scales: mlx.mlx_array,
+    biases: mlx.mlx_array,
+    group_size: usize,
+    bits: usize,
+    rows: usize,
+    s: mlx.mlx_stream,
+) !mlx.mlx_array {
+    std.debug.assert(rows > 0);
+    if (rows == 1) {
+        var out = mlx.mlx_array_new();
+        errdefer _ = mlx.mlx_array_free(out);
+        try mlx.check(mlx.mlx_quantized_matmul(&out, x, w, scales, biases, true, mlx.mlx_optional_int.some(@intCast(group_size)), mlx.mlx_optional_int.some(@intCast(bits)), "affine", s));
+        return out;
+    }
+
+    std.debug.assert(mlx.mlx_array_ndim(x) == 2);
+    const x_shape = mlx.mlx_array_shape(x);
+    const out_dim = mlx.mlx_array_shape(w)[0];
+    const x3_shape = [_]c_int{ @intCast(rows), 1, x_shape[1] };
+    const x3 = try gpuReshape(x, &x3_shape, s);
+    defer _ = mlx.mlx_array_free(x3);
+    const w3 = try gpuQmmSingletonBatchView(w, s);
+    defer _ = mlx.mlx_array_free(w3);
+    const s3 = try gpuQmmSingletonBatchView(scales, s);
+    defer _ = mlx.mlx_array_free(s3);
+    const b3 = try gpuQmmSingletonBatchView(biases, s);
+    defer _ = mlx.mlx_array_free(b3);
+    var y3 = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(y3);
+    try mlx.check(mlx.mlx_quantized_matmul(&y3, x3, w3, s3, b3, true, mlx.mlx_optional_int.some(@intCast(group_size)), mlx.mlx_optional_int.some(@intCast(bits)), "affine", s));
+    const y2_shape = [_]c_int{ @intCast(rows), out_dim };
+    return gpuReshape(y3, &y2_shape, s);
+}
+
+fn qmmBf16BatchedM1(q: *const Q, x: mlx.mlx_array, rows: usize, s: mlx.mlx_stream) !mlx.mlx_array {
+    return qmmNativeBatchedM1(x, q.w, q.s, q.b, q.qp.group_size, q.qp.bits, rows, s);
+}
+
+/// Float32 caller wrapper for the native-bfloat16 M=1 QMM path.
+fn gpuQmmBatchedM1(q: *const Q, x: mlx.mlx_array, rows: usize, s: mlx.mlx_stream) !mlx.mlx_array {
+    std.debug.assert(rows > 0);
+    if (rows == 1) return gpuQmmB(q, x, s);
+
+    var xb = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(xb);
+    try mlx.check(mlx.mlx_astype(&xb, x, .bfloat16, s));
+    const y2 = try qmmBf16BatchedM1(q, xb, rows, s);
+    defer _ = mlx.mlx_array_free(y2);
+    var out = mlx.mlx_array_new();
+    try mlx.check(mlx.mlx_astype(&out, y2, .float32, s));
+    return out;
+}
+
+/// Verification-only dense M=1 projection. Each row remains its own
+/// [1, K] @ [K, N] node; dense rank-3 matmul selects a different reduction
+/// kernel even when its matrix-M dimension is one.
+fn gpuMatmulBatchedM1(x: mlx.mlx_array, w: mlx.mlx_array, rows: usize, s: mlx.mlx_stream) !mlx.mlx_array {
+    std.debug.assert(rows > 0);
+    if (rows == 1) return gpuOp2(mlx.mlx_matmul, x, w, s);
+
+    std.debug.assert(mlx.mlx_array_ndim(x) == 2);
+    std.debug.assert(mlx.mlx_array_ndim(w) == 2);
+    const x_shape = mlx.mlx_array_shape(x);
+    const w_shape = mlx.mlx_array_shape(w);
+    std.debug.assert(x_shape[0] == @as(c_int, @intCast(rows)));
+    std.debug.assert(x_shape[1] == w_shape[0]);
+    const parts = mlx.mlx_vector_array_new();
+    defer _ = mlx.mlx_vector_array_free(parts);
+    for (0..rows) |row_index| {
+        const row = try gpuSliceRC(x, row_index, row_index + 1, 0, @intCast(x_shape[1]), s);
+        defer _ = mlx.mlx_array_free(row);
+        const y = try gpuOp2(mlx.mlx_matmul, row, w, s);
+        defer _ = mlx.mlx_array_free(y);
+        try mlx.check(mlx.mlx_vector_array_append_value(parts, y));
+    }
+    var out = mlx.mlx_array_new();
+    errdefer _ = mlx.mlx_array_free(out);
+    try mlx.check(mlx.mlx_concatenate_axis(&out, parts, 0, s));
+    return out;
+}
+
+/// Verification-only per-row RMSNorm. `fast_rms_norm` is numerically stable
+/// across rows in principle, but this path is a serial-equivalence witness:
+/// retain the serial `[1, D]` reduction shape for every DSpark conditioning
+/// row rather than relying on its batched dispatch.
+fn gpuRmsRowsExact(x: mlx.mlx_array, w: mlx.mlx_array, rows: usize, width: usize, eps: f32, s: mlx.mlx_stream) !mlx.mlx_array {
+    std.debug.assert(rows > 0);
+    if (rows == 1) return gpuRms(x, w, eps, s);
+    const parts = mlx.mlx_vector_array_new();
+    defer _ = mlx.mlx_vector_array_free(parts);
+    for (0..rows) |row_index| {
+        const row = try gpuSliceRC(x, row_index, row_index + 1, 0, width, s);
+        defer _ = mlx.mlx_array_free(row);
+        const normalized = try gpuRms(row, w, eps, s);
+        defer _ = mlx.mlx_array_free(normalized);
+        try mlx.check(mlx.mlx_vector_array_append_value(parts, normalized));
+    }
+    var out = mlx.mlx_array_new();
+    errdefer _ = mlx.mlx_array_free(out);
+    try mlx.check(mlx.mlx_concatenate_axis(&out, parts, 0, s));
+    return out;
+}
+
+/// Grouped dense counterpart to gpuGroupedQmmBatchedM1. The dequantized
+/// wo_a fallback still needs one matrix-M=1 matmul per token to match decode.
+fn gpuGroupedMatmulBatchedM1(x: mlx.mlx_array, w: mlx.mlx_array, rows: usize, s: mlx.mlx_stream) !mlx.mlx_array {
+    std.debug.assert(rows > 0);
+    std.debug.assert(mlx.mlx_array_ndim(x) == 3);
+    std.debug.assert(mlx.mlx_array_ndim(w) == 3);
+    if (rows == 1) return gpuOp2(mlx.mlx_matmul, x, w, s);
+
+    const x_shape = mlx.mlx_array_shape(x);
+    const w_shape = mlx.mlx_array_shape(w);
+    std.debug.assert(x_shape[0] == w_shape[0]);
+    std.debug.assert(x_shape[1] == @as(c_int, @intCast(rows)));
+    std.debug.assert(x_shape[2] == w_shape[1]);
+    const parts = mlx.mlx_vector_array_new();
+    defer _ = mlx.mlx_vector_array_free(parts);
+    for (0..rows) |row_index| {
+        const start = [_]c_int{ 0, @intCast(row_index), 0 };
+        const stop = [_]c_int{ x_shape[0], @intCast(row_index + 1), x_shape[2] };
+        const strides = [_]c_int{ 1, 1, 1 };
+        var row = mlx.mlx_array_new();
+        defer _ = mlx.mlx_array_free(row);
+        try mlx.check(mlx.mlx_slice(&row, x, &start, 3, &stop, 3, &strides, 3, s));
+        const y = try gpuOp2(mlx.mlx_matmul, row, w, s);
+        defer _ = mlx.mlx_array_free(y);
+        try mlx.check(mlx.mlx_vector_array_append_value(parts, y));
+    }
+    var out = mlx.mlx_array_new();
+    errdefer _ = mlx.mlx_array_free(out);
+    try mlx.check(mlx.mlx_concatenate_axis(&out, parts, 1, s));
+    return out;
+}
+
+/// Grouped wo_a QMM with C moved into a batch axis and matrix-M fixed at one:
+/// x [og, C, gin] → [og, C, 1, gin], q [og, ol, x] → [og, 1, ol, x].
+fn gpuGroupedQmmBatchedM1(q: *const Q3, qp: *const QuantParams, x: mlx.mlx_array, rows: usize, s: mlx.mlx_stream) !mlx.mlx_array {
+    std.debug.assert(rows > 0);
+    std.debug.assert(mlx.mlx_array_ndim(x) == 3);
+    if (rows == 1) {
+        var out = mlx.mlx_array_new();
+        errdefer _ = mlx.mlx_array_free(out);
+        try mlx.check(mlx.mlx_quantized_matmul(&out, x, q.w, q.s, q.b, true, mlx.mlx_optional_int.some(@intCast(qp.group_size)), mlx.mlx_optional_int.some(@intCast(qp.bits)), "affine", s));
+        return out;
+    }
+
+    const x_shape = mlx.mlx_array_shape(x);
+    const q_shape = mlx.mlx_array_shape(q.w);
+    std.debug.assert(x_shape[0] == q_shape[0]);
+    std.debug.assert(x_shape[1] == @as(c_int, @intCast(rows)));
+    const x4_shape = [_]c_int{ x_shape[0], @intCast(rows), 1, x_shape[2] };
+    const x4 = try gpuReshape(x, &x4_shape, s);
+    defer _ = mlx.mlx_array_free(x4);
+    const w4 = try gpuGroupedQmmSingletonBatchView(q.w, s);
+    defer _ = mlx.mlx_array_free(w4);
+    const s4 = try gpuGroupedQmmSingletonBatchView(q.s, s);
+    defer _ = mlx.mlx_array_free(s4);
+    const b4 = try gpuGroupedQmmSingletonBatchView(q.b, s);
+    defer _ = mlx.mlx_array_free(b4);
+    var y4 = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(y4);
+    try mlx.check(mlx.mlx_quantized_matmul(&y4, x4, w4, s4, b4, true, mlx.mlx_optional_int.some(@intCast(qp.group_size)), mlx.mlx_optional_int.some(@intCast(qp.bits)), "affine", s));
+    const y3_shape = [_]c_int{ x_shape[0], @intCast(rows), q_shape[1] };
+    return gpuReshape(y4, &y3_shape, s);
 }
 
 fn gpuRms(x: mlx.mlx_array, w: mlx.mlx_array, eps: f32, s: mlx.mlx_stream) !mlx.mlx_array {
@@ -5538,24 +6035,32 @@ fn traceMemMb(comptime which: enum { active, cache, peak }) usize {
 }
 
 fn moeGpu(m: *const Dsv4Model, alloc: std.mem.Allocator, li: usize, x_g: mlx.mlx_array, ids: []const u32, trace_call: ?*const router_trace_mod.Call) !mlx.mlx_array {
-    return moeGpuImpl(m, alloc, li, x_g, ids, null, trace_call);
+    return moeGpuWithM1(m, alloc, li, x_g, ids, trace_call, false);
+}
+
+fn moeGpuWithM1(m: *const Dsv4Model, alloc: std.mem.Allocator, li: usize, x_g: mlx.mlx_array, ids: []const u32, trace_call: ?*const router_trace_mod.Call, serial_verify_m1: bool) !mlx.mlx_array {
+    return moeGpuImpl(m, alloc, li, x_g, ids, null, trace_call, serial_verify_m1);
 }
 
 /// `moeGpu` with the token id as a LAZY GPU array (single token): hash-layer
 /// routing looks the tid2eid row up via take on device, so the id never
 /// touches the host (the lazy decode path's requirement).
 fn moeGpuLazy(m: *const Dsv4Model, alloc: std.mem.Allocator, li: usize, x_g: mlx.mlx_array, id_arr: mlx.mlx_array, trace_call: ?*const router_trace_mod.Call) !mlx.mlx_array {
-    return moeGpuImpl(m, alloc, li, x_g, &.{0}, id_arr, trace_call);
+    return moeGpuImpl(m, alloc, li, x_g, &.{0}, id_arr, trace_call, false);
 }
 
-fn moeGpuImpl(m: *const Dsv4Model, alloc: std.mem.Allocator, li: usize, x_g: mlx.mlx_array, ids: []const u32, id_arr: ?mlx.mlx_array, trace_call: ?*const router_trace_mod.Call) !mlx.mlx_array {
+fn moeGpuImpl(m: *const Dsv4Model, alloc: std.mem.Allocator, li: usize, x_g: mlx.mlx_array, ids: []const u32, id_arr: ?mlx.mlx_array, trace_call: ?*const router_trace_mod.Call, serial_verify_m1: bool) !mlx.mlx_array {
     const ly = &m.dw.layers[li];
     const h = &m.hl[li];
     const E = m.n_experts;
     const k = m.topk;
     const seq = ids.len;
-    const scores_g = try gpuOp2(mlx.mlx_matmul, x_g, h.gate_w_t, m.s);
+    const scores_g = if (serial_verify_m1)
+        try gpuMatmulBatchedM1(x_g, h.gate_w_t, seq, m.s)
+    else
+        try gpuOp2(mlx.mlx_matmul, x_g, h.gate_w_t, m.s);
     defer _ = mlx.mlx_array_free(scores_g);
+    try captureDifferentialStage(m, scores_g, li, .moe_gate_scores, seq);
 
     const ind_shape = [_]c_int{ @intCast(seq), @intCast(k) };
     const wshape = [_]c_int{ @intCast(seq), @intCast(k), 1, 1 };
@@ -5711,22 +6216,33 @@ fn moeGpuImpl(m: *const Dsv4Model, alloc: std.mem.Allocator, li: usize, x_g: mlx
         defer _ = mlx.mlx_array_free(down_arr);
         try mlx.check(mlx.mlx_astype(&down32, down_arr, .float32, m.s));
     }
+    try captureDifferentialStage(m, down32, li, .moe_routed_down, seq);
     const weighted = try gpuOp2(mlx.mlx_multiply, down32, w_arr, m.s);
     defer _ = mlx.mlx_array_free(weighted);
     var routed = mlx.mlx_array_new();
     defer _ = mlx.mlx_array_free(routed);
     try mlx.check(mlx.mlx_sum_axis(&routed, weighted, 1, false, m.s)); // [C, 1, d]
+    try captureDifferentialStage(m, routed, li, .moe_routed, seq);
     // shared expert (clipped too)
     var xb = mlx.mlx_array_new();
     defer _ = mlx.mlx_array_free(xb);
     try mlx.check(mlx.mlx_astype(&xb, x_g, .bfloat16, m.s));
-    const sg_arr = try qmmBf16(&ly.shared_w1, xb, m.s);
+    const sg_arr = if (serial_verify_m1)
+        try qmmBf16BatchedM1(&ly.shared_w1, xb, seq, m.s)
+    else
+        try qmmBf16(&ly.shared_w1, xb, m.s);
     defer _ = mlx.mlx_array_free(sg_arr);
-    const su_arr = try qmmBf16(&ly.shared_w3, xb, m.s);
+    const su_arr = if (serial_verify_m1)
+        try qmmBf16BatchedM1(&ly.shared_w3, xb, seq, m.s)
+    else
+        try qmmBf16(&ly.shared_w3, xb, m.s);
     defer _ = mlx.mlx_array_free(su_arr);
     const sact = try clippedSwigluG(sg_arr, su_arr, m.swiglu_limit, m.s);
     defer _ = mlx.mlx_array_free(sact);
-    const sd_arr = try qmmBf16(&ly.shared_w2, sact, m.s);
+    const sd_arr = if (serial_verify_m1)
+        try qmmBf16BatchedM1(&ly.shared_w2, sact, seq, m.s)
+    else
+        try qmmBf16(&ly.shared_w2, sact, m.s);
     defer _ = mlx.mlx_array_free(sd_arr);
     var sd32 = mlx.mlx_array_new();
     defer _ = mlx.mlx_array_free(sd32);
@@ -5734,8 +6250,10 @@ fn moeGpuImpl(m: *const Dsv4Model, alloc: std.mem.Allocator, li: usize, x_g: mlx
     const sshape = [_]c_int{ @intCast(seq), 1, @intCast(m.dim) };
     const sd_r = try gpuReshape(sd32, &sshape, m.s);
     defer _ = mlx.mlx_array_free(sd_r);
+    try captureDifferentialStage(m, sd_r, li, .moe_shared, seq);
     const total = try gpuOp2(mlx.mlx_add, routed, sd_r, m.s);
     defer _ = mlx.mlx_array_free(total);
+    try captureDifferentialStage(m, total, li, .moe_output, seq);
     if (li >= m.n_layers and std.c.getenv("MLX_SERVE_DSPARK_TRACE") != null) {
         const pr = struct {
             fn f(al: std.mem.Allocator, arr: mlx.mlx_array, n: usize, s2: mlx.mlx_stream) f64 {
@@ -5748,17 +6266,23 @@ fn moeGpuImpl(m: *const Dsv4Model, alloc: std.mem.Allocator, li: usize, x_g: mlx
         }.f;
         log.info("[dspark-trace] moe li={d} mem(pre)={d}/{d}/{d}MB scores={d:.4} w={d:.4}\n", .{
             li,
-            traceMemMb(.active),      traceMemMb(.cache),       traceMemMb(.peak),
+            traceMemMb(.active),
+            traceMemMb(.cache),
+            traceMemMb(.peak),
             pr(alloc, scores_g, seq * E, m.s),
             pr(alloc, w_arr, seq * k, m.s),
         });
         log.info("[dspark-trace] moe li={d} mem(mid)={d}/{d}/{d}MB down={d:.4} routed={d:.4} shared={d:.4} mem(post)={d}/{d}/{d}MB\n", .{
             li,
-            traceMemMb(.active),      traceMemMb(.cache),    traceMemMb(.peak),
+            traceMemMb(.active),
+            traceMemMb(.cache),
+            traceMemMb(.peak),
             pr(alloc, down32, seq * k * m.dim, m.s),
             pr(alloc, routed, seq * m.dim, m.s),
             pr(alloc, sd32, seq * m.dim, m.s),
-            traceMemMb(.active),      traceMemMb(.cache),    traceMemMb(.peak),
+            traceMemMb(.active),
+            traceMemMb(.cache),
+            traceMemMb(.peak),
         });
     }
     const oshape = [_]c_int{ @intCast(seq), @intCast(m.dim) };
@@ -5801,7 +6325,10 @@ fn attentionDecodeGpu(m: *const Dsv4Model, alloc: std.mem.Allocator, st: *Dsv4De
     const qr_n = blk: {
         const qr = try gpuQmmB(&ly.wq_a, x_g, m.s);
         defer _ = mlx.mlx_array_free(qr);
-        break :blk try gpuRms(qr, h.q_norm_g, m.eps, m.s);
+        try captureDifferentialStage(m, qr, li, .query_a_projection, 1);
+        const qr_norm = try gpuRms(qr, h.q_norm_g, m.eps, m.s);
+        try captureDifferentialStage(m, qr_norm, li, .query_a_norm, 1);
+        break :blk qr_norm;
     };
     defer _ = mlx.mlx_array_free(qr_n);
     const q_rot = blk: {
@@ -5829,20 +6356,20 @@ fn attentionDecodeGpu(m: *const Dsv4Model, alloc: std.mem.Allocator, st: *Dsv4De
             try captureDifferentialStage(m, kv_fused, li, .key_value, 1);
             try ls.kv_gpu.appendGpu(kv_fused, 1, m.s);
         } else {
-        const kv_n = try gpuRms(kv0, h.kv_norm_g, m.eps, m.s);
-        defer _ = mlx.mlx_array_free(kv_n);
-        const kv_rot = try gpuRopeTail(kv_n, rd, rr.cos, rr.sin, false, m.s);
-        defer _ = mlx.mlx_array_free(kv_rot);
-        const head0 = try gpuSliceCols(kv_rot, 1, 0, hd - rd, m.s);
-        defer _ = mlx.mlx_array_free(head0);
-        const head_sim = try gpuFp8Sim(head0, m.s);
-        defer _ = mlx.mlx_array_free(head_sim);
-        const tail = try gpuSliceCols(kv_rot, 1, hd - rd, hd, m.s);
-        defer _ = mlx.mlx_array_free(tail);
-        const kv_fin = try gpuConcat2(head_sim, tail, 1, m.s);
-        defer _ = mlx.mlx_array_free(kv_fin);
-        try captureDifferentialStage(m, kv_fin, li, .key_value, 1);
-        try ls.kv_gpu.appendGpu(kv_fin, 1, m.s);
+            const kv_n = try gpuRms(kv0, h.kv_norm_g, m.eps, m.s);
+            defer _ = mlx.mlx_array_free(kv_n);
+            const kv_rot = try gpuRopeTail(kv_n, rd, rr.cos, rr.sin, false, m.s);
+            defer _ = mlx.mlx_array_free(kv_rot);
+            const head0 = try gpuSliceCols(kv_rot, 1, 0, hd - rd, m.s);
+            defer _ = mlx.mlx_array_free(head0);
+            const head_sim = try gpuFp8Sim(head0, m.s);
+            defer _ = mlx.mlx_array_free(head_sim);
+            const tail = try gpuSliceCols(kv_rot, 1, hd - rd, hd, m.s);
+            defer _ = mlx.mlx_array_free(tail);
+            const kv_fin = try gpuConcat2(head_sim, tail, 1, m.s);
+            defer _ = mlx.mlx_array_free(kv_fin);
+            try captureDifferentialStage(m, kv_fin, li, .key_value, 1);
+            try ls.kv_gpu.appendGpu(kv_fin, 1, m.s);
         }
     }
 
@@ -5854,7 +6381,8 @@ fn attentionDecodeGpu(m: *const Dsv4Model, alloc: std.mem.Allocator, st: *Dsv4De
     // (`processDeferredComp`) instead of stalling the pipeline per layer
     // (~41 blocking round-trips/token at steady state before this).
     if (ratio != 0) {
-        const comp_in = try compInProj(m, h, li, x_g, 1);
+        const comp_in = try compInProj(m, h, li, x_g, 1, false);
+        try captureDifferentialStage(m, comp_in, li, .compressor_input, 1);
         const boundary_attn = (pos + 1) % ratio == 0;
         const boundary_idx = ls.idx_comp != null and (pos + 1) % 4 == 0;
         if (gpuEmitActive(m)) {
@@ -5911,6 +6439,7 @@ fn attentionDecodeGpu(m: *const Dsv4Model, alloc: std.mem.Allocator, st: *Dsv4De
             const qi_sim = blk: {
                 const qi = try gpuQmmB(&ly.idx.?.wq_b, qr_n, m.s);
                 defer _ = mlx.mlx_array_free(qi);
+                try captureDifferentialStage(m, qi, li, .index_query_projection, 1);
                 if (try decChainKernel(m, qi, ih, ihd, rd, null, 2, false, rr)) |fused| break :blk fused;
                 const qsh = [_]c_int{ @intCast(ih), @intCast(ihd) };
                 const qi_r = try gpuReshape(qi, &qsh, m.s);
@@ -5922,6 +6451,7 @@ fn attentionDecodeGpu(m: *const Dsv4Model, alloc: std.mem.Allocator, st: *Dsv4De
                 break :blk try gpuFp4Sim(qi_had, m.s);
             };
             defer _ = mlx.mlx_array_free(qi_sim);
+            try captureDifferentialStage(m, qi_sim, li, .index_query, 1);
             const islots = try ls.idx_gpu.sliceRows(0, avail, m.s);
             defer _ = mlx.mlx_array_free(islots);
             const it_ = try gpuOp1(mlx.mlx_transpose, islots, m.s);
@@ -6015,9 +6545,11 @@ fn attentionDecodeGpu(m: *const Dsv4Model, alloc: std.mem.Allocator, st: *Dsv4De
     }
     const o_arr = try gpuOp2(mlx.mlx_matmul, probs_real, kmat, m.s);
     defer _ = mlx.mlx_array_free(o_arr);
+    try captureDifferentialStage(m, o_arr, li, .attention_value_mix, 1);
     const o_inv = (try decChainKernel(m, o_arr, nh, hd, rd, null, 0, true, rr)) orelse
         try gpuRopeTail(o_arr, rd, rr.cos, rr.sin, true, m.s);
     defer _ = mlx.mlx_array_free(o_inv);
+    try captureDifferentialStage(m, o_inv, li, .attention_inverse_rope, 1);
     // grouped low-rank O on GPU: [og, 1, gin] bf16 @ wo_a_deq [og, gin, ol]
     const og = m.o_groups;
     const ol = m.o_lora;
@@ -6028,12 +6560,16 @@ fn attentionDecodeGpu(m: *const Dsv4Model, alloc: std.mem.Allocator, st: *Dsv4De
     var o_b = mlx.mlx_array_new();
     defer _ = mlx.mlx_array_free(o_b);
     try mlx.check(mlx.mlx_astype(&o_b, o_g, .bfloat16, m.s));
+    try captureDifferentialStage(m, o_b, li, .attention_output_input, 1);
     const ored = try woAMatmul(m, li, o_b);
     defer _ = mlx.mlx_array_free(ored);
     const rshape2 = [_]c_int{ 1, @intCast(og * ol) };
     const ored_r = try gpuReshape(ored, &rshape2, m.s);
     defer _ = mlx.mlx_array_free(ored_r);
-    return try gpuQmmB(&ly.wo_b, ored_r, m.s); // [1, dim] f32
+    try captureDifferentialStage(m, ored_r, li, .attention_output_a, 1);
+    const out = try gpuQmmB(&ly.wo_b, ored_r, m.s); // [1, dim] f32
+    try captureDifferentialStage(m, out, li, .attention_output_b, 1);
+    return out;
 }
 
 /// The 43-layer decode walk shared by the sync (`decodeStep`) and lazy
@@ -6059,6 +6595,13 @@ fn decodeLayers(m: *Dsv4Model, a: std.mem.Allocator, st: *Dsv4DecodeState, strea
         {
             const pre = try hcPreGpu(m, a, stream_g, h.hc_attn_fn_t, h.hc_attn_scale, h.hc_attn_base, ly.hc_attn_scale, ly.hc_attn_base);
             defer freeHcPre(&pre);
+            try captureDifferentialStage(m, pre.y, li, .attention_hc_pre_y, 1);
+            if (pre.pk) |pk| {
+                try captureDifferentialStage(m, pk, li, .attention_hc_pack, 1);
+            } else {
+                try captureDifferentialStage(m, pre.post_g, li, .attention_hc_post_coeff, 1);
+                try captureDifferentialStage(m, pre.combT_g, li, .attention_hc_residual_coeff, 1);
+            }
             const x = try gpuRms(pre.y, h.attn_norm_g, m.eps, m.s);
             defer _ = mlx.mlx_array_free(x);
             const attn_out = try attentionDecodeGpu(m, a, st, li, x, pos, rr, fr, deferred);
@@ -6185,7 +6728,7 @@ pub fn decodeStepWithTrace(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4Decod
         var mh = mlx.mlx_array_new();
         defer _ = mlx.mlx_array_free(mh);
         try mlx.check(mlx.mlx_concatenate_axis(&mh, vec, 1, m.s));
-        try appendDsparkMainKv(m, st, mh, 1, &rr_plain);
+        try appendDsparkMainKv(m, st, mh, 1, &rr_plain, false);
     }
     return logits;
 }
@@ -6468,37 +7011,52 @@ fn ownedLastRow(x: mlx.mlx_array, n: usize, w: usize, s: mlx.mlx_stream) !mlx.ml
 /// absolute positions → fp8 sim on the non-rope dims, the exact
 /// DSparkAttention main_kv recipe — and append it to that stage's ring.
 /// `rr` are PLAIN rope rows covering the same positions (stages are ratio-0).
-fn appendDsparkMainKv(m: *Dsv4Model, st: *Dsv4DecodeState, mh: mlx.mlx_array, n: usize, rr: *const RopeRows) !void {
+/// `serial_verify_m1` is intentionally limited to the DSpark verification
+/// candidate; normal `.last_host` prefill keeps its existing batched graph.
+fn appendDsparkMainKv(m: *Dsv4Model, st: *Dsv4DecodeState, mh: mlx.mlx_array, n: usize, rr: *const RopeRows, serial_verify_m1: bool) !void {
     const ds = &st.dspark.?;
     const dspw = &m.dw.dspark.?;
     const hd = m.head_dim;
     const rd = m.rd;
     const single = mlx.mlx_array_ndim(rr.cos) == 1;
     const main_x = blk: {
-        const proj = try gpuQmmB(&dspw.main_proj, mh, m.s);
+        const proj = if (serial_verify_m1)
+            try gpuQmmBatchedM1(&dspw.main_proj, mh, n, m.s)
+        else
+            try gpuQmmB(&dspw.main_proj, mh, m.s);
         defer _ = mlx.mlx_array_free(proj);
-        break :blk try gpuRms(proj, m.ds_main_norm_g.?, m.eps, m.s);
+        break :blk if (serial_verify_m1)
+            try gpuRmsRowsExact(proj, m.ds_main_norm_g.?, n, m.dim, m.eps, m.s)
+        else
+            try gpuRms(proj, m.ds_main_norm_g.?, m.eps, m.s);
     };
     defer _ = mlx.mlx_array_free(main_x);
     for (0..m.n_mtp) |sti| {
         const ly = &m.dw.layers[m.n_layers + sti];
         const h = &m.hl[m.n_layers + sti];
-        const kv0 = try gpuQmmB(&ly.wkv, main_x, m.s);
-        defer _ = mlx.mlx_array_free(kv0);
-        const kv_n = try gpuRms(kv0, h.kv_norm_g, m.eps, m.s);
-        defer _ = mlx.mlx_array_free(kv_n);
-        const kv_rot = if (single)
-            try gpuRopeTail(kv_n, rd, rr.cos, rr.sin, false, m.s)
+        const kv0 = if (serial_verify_m1)
+            try gpuQmmBatchedM1(&ly.wkv, main_x, n, m.s)
         else
-            try gpuRopeTailRows(kv_n, rd, rr.cos, rr.sin, false, m.s);
-        defer _ = mlx.mlx_array_free(kv_rot);
-        const head0 = try gpuSliceCols(kv_rot, n, 0, hd - rd, m.s);
-        defer _ = mlx.mlx_array_free(head0);
-        const head_sim = try gpuFp8Sim(head0, m.s);
-        defer _ = mlx.mlx_array_free(head_sim);
-        const tail = try gpuSliceCols(kv_rot, n, hd - rd, hd, m.s);
-        defer _ = mlx.mlx_array_free(tail);
-        const kv_fin = try gpuConcat2(head_sim, tail, 1, m.s);
+            try gpuQmmB(&ly.wkv, main_x, m.s);
+        defer _ = mlx.mlx_array_free(kv0);
+        const kv_fin = if (serial_verify_m1)
+            try decChainRowsComposed(m, kv0, n, 1, hd, rd, h.kv_norm_g, 1, false, rr)
+        else blk: {
+            const kv_n = try gpuRms(kv0, h.kv_norm_g, m.eps, m.s);
+            defer _ = mlx.mlx_array_free(kv_n);
+            const kv_rot = if (single)
+                try gpuRopeTail(kv_n, rd, rr.cos, rr.sin, false, m.s)
+            else
+                try gpuRopeTailRows(kv_n, rd, rr.cos, rr.sin, false, m.s);
+            defer _ = mlx.mlx_array_free(kv_rot);
+            const head0 = try gpuSliceCols(kv_rot, n, 0, hd - rd, m.s);
+            defer _ = mlx.mlx_array_free(head0);
+            const head_sim = try gpuFp8Sim(head0, m.s);
+            defer _ = mlx.mlx_array_free(head_sim);
+            const tail = try gpuSliceCols(kv_rot, n, hd - rd, hd, m.s);
+            defer _ = mlx.mlx_array_free(tail);
+            break :blk try gpuConcat2(head_sim, tail, 1, m.s);
+        };
         defer _ = mlx.mlx_array_free(kv_fin);
         try ds.main_kv[sti].appendGpu(kv_fin, n, m.s);
     }
@@ -6557,6 +7115,7 @@ fn headLogitsLazyGpu(m: *const Dsv4Model, stream_g: mlx.mlx_array) !mlx.mlx_arra
     defer _ = mlx.mlx_array_free(flat);
     const mixes_g = try gpuOp2(mlx.mlx_matmul, flat, m.hc_head_fn_t, m.s);
     defer _ = mlx.mlx_array_free(mixes_g);
+    try captureDifferentialStage(m, mixes_g, m.n_layers, .head_mix, 1);
     const sq = try gpuOp1(mlx.mlx_square, flat, m.s);
     defer _ = mlx.mlx_array_free(sq);
     var ssum = mlx.mlx_array_new();
@@ -6572,8 +7131,10 @@ fn headLogitsLazyGpu(m: *const Dsv4Model, stream_g: mlx.mlx_array) !mlx.mlx_arra
     var hout = mlx.mlx_array_new();
     defer _ = mlx.mlx_array_free(hout);
     try mlx.check(mlx.mlx_sum_axis(&hout, weighted, 0, true, m.s));
+    try captureDifferentialStage(m, hout, m.n_layers, .head_collapse, 1);
     const hn = try gpuRms(hout, m.final_norm_g, m.eps, m.s);
     defer _ = mlx.mlx_array_free(hn);
+    try captureDifferentialStage(m, hn, m.n_layers, .head_norm, 1);
     return try gpuQmmB(&m.dw.head, hn, m.s);
 }
 
@@ -6729,7 +7290,7 @@ fn gpuSliceLast3(x: mlx.mlx_array, d0: usize, d1: usize, c0: usize, c1: usize, s
 /// Batched hc_pre on a [C, hc, d] stream: y [C, d], post [C, hc, 1], combT
 /// [C, hc, hc]. Fused-kernel arm (per-C config, grid C) or host-Sinkhorn
 /// fallback (one [C, mix+1] sync + per-token loop).
-fn hcPreBatch(m: *Dsv4Model, alloc: std.mem.Allocator, stream_g: mlx.mlx_array, c_tokens: usize, fn_w_t: mlx.mlx_array, scale: []const f32, base: []const f32, scale_g: mlx.mlx_array, base_g: mlx.mlx_array) !HcPreG {
+fn hcPreBatch(m: *Dsv4Model, alloc: std.mem.Allocator, stream_g: mlx.mlx_array, c_tokens: usize, fn_w_t: mlx.mlx_array, scale: []const f32, base: []const f32, scale_g: mlx.mlx_array, base_g: mlx.mlx_array, serial_verify_m1: bool) !HcPreG {
     const hcm = m.hc;
     const hd_full = hcm * m.dim;
     const mix = (2 + hcm) * hcm;
@@ -6737,7 +7298,10 @@ fn hcPreBatch(m: *Dsv4Model, alloc: std.mem.Allocator, stream_g: mlx.mlx_array, 
     const fshape = [_]c_int{ cc, @intCast(hd_full) };
     const flat = try gpuReshape(stream_g, &fshape, m.s);
     defer _ = mlx.mlx_array_free(flat);
-    const mixes_g = try gpuOp2(mlx.mlx_matmul, flat, fn_w_t, m.s);
+    const mixes_g = if (serial_verify_m1)
+        try gpuMatmulBatchedM1(flat, fn_w_t, c_tokens, m.s)
+    else
+        try gpuOp2(mlx.mlx_matmul, flat, fn_w_t, m.s);
     defer _ = mlx.mlx_array_free(mixes_g);
     const sq = try gpuOp1(mlx.mlx_square, flat, m.s);
     defer _ = mlx.mlx_array_free(sq);
@@ -7501,6 +8065,97 @@ const DEC_CHAIN_KERNEL_SOURCE =
     \\}
 ;
 
+/// Multi-row form of the established serial source. Each threadgroup keeps
+/// the same per-head program; grid.z only selects x/cos/sin/output rows.
+const DEC_CHAIN_ROWS_KERNEL_SOURCE =
+    \\int row_index = thread_position_in_grid.z;
+    \\int h = thread_position_in_grid.y;
+    \\int lane = thread_position_in_threadgroup.x;
+    \\if (h >= H) return; // uniform per threadgroup (grid.y == H)
+    \\const int HALF = RD / 2;
+    \\const int QW = (POST == 1) ? (D - RD) : ((POST == 2) ? D : 0);
+    \\const int GROUP = (POST == 2) ? 32 : 64;
+    \\const float CODE_MAX = (POST == 2) ? 6.0f : 448.0f;
+    \\const float AMAX_FLOOR = (POST == 2) ? metal::ldexp(6.0f, -126) : 1e-4f;
+    \\const int MANT_BITS = (POST == 2) ? 1 : 3;
+    \\const int MIN_EXP = (POST == 2) ? 0 : -6;
+    \\const float MIN_SUB = metal::ldexp(1.0f, MIN_EXP);
+    \\threadgroup float row[D];
+    \\threadgroup float row2[(POST == 2) ? D : 1];
+    \\threadgroup float red[TG];
+    \\threadgroup float gsc[(QW > 0) ? (QW / GROUP) : 1];
+    \\// load (+ per-head RMSNorm)
+    \\if (RMS != 0) {
+    \\  float ss = 0.0f;
+    \\  for (int j = lane; j < D; j += TG) { float v = x[(row_index * H + h) * D + j]; ss += v * v; }
+    \\  red[lane] = ss;
+    \\  threadgroup_barrier(metal::mem_flags::mem_threadgroup);
+    \\  for (int off = TG / 2; off > 0; off >>= 1) {
+    \\    if (lane < off) red[lane] += red[lane + off];
+    \\    threadgroup_barrier(metal::mem_flags::mem_threadgroup);
+    \\  }
+    \\  float rinv = metal::rsqrt(red[0] / (float)D + consts[0]);
+    \\  for (int j = lane; j < D; j += TG) row[j] = x[(row_index * H + h) * D + j] * rinv * w[j];
+    \\} else {
+    \\  for (int j = lane; j < D; j += TG) row[j] = x[(row_index * H + h) * D + j];
+    \\}
+    \\threadgroup_barrier(metal::mem_flags::mem_threadgroup);
+    \\// interleaved-pair rope on the tail RD dims (INV = conjugate rotation)
+    \\for (int p = lane; p < HALF; p += TG) {
+    \\  float a = row[D - RD + 2 * p];
+    \\  float b = row[D - RD + 2 * p + 1];
+    \\  float cv = cosr[row_index * HALF + p];
+    \\  float sv = (INV != 0) ? -sinr[row_index * HALF + p] : sinr[row_index * HALF + p];
+    \\  row[D - RD + 2 * p] = a * cv - b * sv;
+    \\  row[D - RD + 2 * p + 1] = a * sv + b * cv;
+    \\}
+    \\threadgroup_barrier(metal::mem_flags::mem_threadgroup);
+    \\if (POST == 2) {
+    \\  for (int j = lane; j < D; j += TG) {
+    \\    float hacc = 0.0f;
+    \\    for (int kk = 0; kk < D; ++kk) hacc += row[kk] * hada[kk * D + j];
+    \\    row2[j] = hacc;
+    \\  }
+    \\  threadgroup_barrier(metal::mem_flags::mem_threadgroup);
+    \\}
+    \\if (QW > 0) {
+    \\  const int NG = QW / GROUP;
+    \\  for (int g = lane; g < NG; g += TG) {
+    \\    float amax = AMAX_FLOOR;
+    \\    for (int e = 0; e < GROUP; ++e) {
+    \\      float v = (POST == 2) ? row2[g * GROUP + e] : row[g * GROUP + e];
+    \\      amax = metal::max(amax, metal::abs(v));
+    \\    }
+    \\    float q = amax / CODE_MAX;
+    \\    int ee = 0;
+    \\    float mm = metal::frexp(q, ee);
+    \\    int ce = (mm == 0.5f) ? (ee - 1) : ee;
+    \\    gsc[g] = metal::ldexp(1.0f, ce);
+    \\  }
+    \\  threadgroup_barrier(metal::mem_flags::mem_threadgroup);
+    \\}
+    \\for (int j = lane; j < D; j += TG) {
+    \\  float v = (POST == 2) ? row2[j] : row[j];
+    \\  float res = v;
+    \\  if (POST == 2 || (POST == 1 && j < D - RD)) {
+    \\    float scale = gsc[j / GROUP];
+    \\    float y = metal::clamp(v / scale, -CODE_MAX, CODE_MAX);
+    \\    float a = metal::abs(y);
+    \\    float af = metal::max(a, MIN_SUB);
+    \\    int ee2 = 0;
+    \\    float mm2 = metal::frexp(af, ee2);
+    \\    int e2 = ee2 - 1; // floor(log2(af)): mm2 in [0.5, 1)
+    \\    (void)mm2;
+    \\    if (e2 < MIN_EXP) e2 = MIN_EXP;
+    \\    float quantum = metal::ldexp(1.0f, e2 - MANT_BITS);
+    \\    float qv = metal::min(metal::rint(a / quantum) * quantum, CODE_MAX);
+    \\    float sq = (y < 0.0f) ? -qv : ((y > 0.0f) ? qv : 0.0f);
+    \\    res = sq * scale;
+    \\  }
+    \\  y_out[(row_index * H + h) * D + j] = res;
+    \\}
+;
+
 var dec_chain_obj: ?mlx.mlx_fast_metal_kernel = null;
 var dec_chain_build_failed: bool = false;
 fn decChainObj() ?mlx.mlx_fast_metal_kernel {
@@ -7522,6 +8177,27 @@ fn decChainObj() ?mlx.mlx_fast_metal_kernel {
     return kernel;
 }
 
+var dec_chain_rows_obj: ?mlx.mlx_fast_metal_kernel = null;
+var dec_chain_rows_build_failed: bool = false;
+fn decChainRowsObj() ?mlx.mlx_fast_metal_kernel {
+    if (dec_chain_rows_build_failed) return null;
+    if (dec_chain_rows_obj) |kk| return kk;
+    const input_names = [_][*:0]const u8{ "x", "w", "cosr", "sinr", "hada", "consts" };
+    const output_names = [_][*:0]const u8{"y_out"};
+    const in_vec = mlx.mlx_vector_string_new_data(&input_names, input_names.len);
+    defer _ = mlx.mlx_vector_string_free(in_vec);
+    const out_vec = mlx.mlx_vector_string_new_data(&output_names, output_names.len);
+    defer _ = mlx.mlx_vector_string_free(out_vec);
+    const kernel = mlx.mlx_fast_metal_kernel_new("dsv4_dec_chain_rows", in_vec, out_vec, DEC_CHAIN_ROWS_KERNEL_SOURCE, "", true, false);
+    if (kernel.ctx == null) {
+        dec_chain_rows_build_failed = true;
+        log.warn("dsv4: grid-z decode-chain kernel failed to build — row fallback\n", .{});
+        return null;
+    }
+    dec_chain_rows_obj = kernel;
+    return kernel;
+}
+
 const DecChainKey = struct { h: u32, d: u32, rd: u32, rms: bool, post: u8, inv: bool, tg: u32 };
 const DecChainSlot = struct { key: DecChainKey, cfg: mlx.mlx_fast_metal_kernel_config };
 /// Decode chains have a handful of per-model geometries — small fixed cache.
@@ -7532,6 +8208,30 @@ fn decChainCfg(key: DecChainKey) ?mlx.mlx_fast_metal_kernel_config {
     const out_shape = [_]c_int{ @intCast(key.h), @intCast(key.d) };
     if (mlx.mlx_fast_metal_kernel_config_add_output_arg(cfg, &out_shape, 2, .float32) != 0 or
         mlx.mlx_fast_metal_kernel_config_set_grid(cfg, @intCast(key.tg), @intCast(key.h), 1) != 0 or
+        mlx.mlx_fast_metal_kernel_config_set_thread_group(cfg, @intCast(key.tg), 1, 1) != 0 or
+        mlx.mlx_fast_metal_kernel_config_add_template_arg_int(cfg, "D", @intCast(key.d)) != 0 or
+        mlx.mlx_fast_metal_kernel_config_add_template_arg_int(cfg, "H", @intCast(key.h)) != 0 or
+        mlx.mlx_fast_metal_kernel_config_add_template_arg_int(cfg, "RD", @intCast(key.rd)) != 0 or
+        mlx.mlx_fast_metal_kernel_config_add_template_arg_int(cfg, "RMS", @intFromBool(key.rms)) != 0 or
+        mlx.mlx_fast_metal_kernel_config_add_template_arg_int(cfg, "POST", key.post) != 0 or
+        mlx.mlx_fast_metal_kernel_config_add_template_arg_int(cfg, "INV", @intFromBool(key.inv)) != 0 or
+        mlx.mlx_fast_metal_kernel_config_add_template_arg_int(cfg, "TG", @intCast(key.tg)) != 0)
+    {
+        _ = mlx.mlx_fast_metal_kernel_config_free(cfg);
+        return null;
+    }
+    return cfg;
+}
+
+const DecChainRowsKey = struct { rows: u32, h: u32, d: u32, rd: u32, rms: bool, post: u8, inv: bool, tg: u32 };
+const DecChainRowsSlot = struct { key: DecChainRowsKey, cfg: mlx.mlx_fast_metal_kernel_config };
+var dec_chain_rows_cfg_cache: [32]?DecChainRowsSlot = @splat(null);
+
+fn decChainRowsCfg(key: DecChainRowsKey) ?mlx.mlx_fast_metal_kernel_config {
+    const cfg = mlx.mlx_fast_metal_kernel_config_new();
+    const out_shape = [_]c_int{ @intCast(key.rows), @intCast(key.h), @intCast(key.d) };
+    if (mlx.mlx_fast_metal_kernel_config_add_output_arg(cfg, &out_shape, 3, .float32) != 0 or
+        mlx.mlx_fast_metal_kernel_config_set_grid(cfg, @intCast(key.tg), @intCast(key.h), @intCast(key.rows)) != 0 or
         mlx.mlx_fast_metal_kernel_config_set_thread_group(cfg, @intCast(key.tg), 1, 1) != 0 or
         mlx.mlx_fast_metal_kernel_config_add_template_arg_int(cfg, "D", @intCast(key.d)) != 0 or
         mlx.mlx_fast_metal_kernel_config_add_template_arg_int(cfg, "H", @intCast(key.h)) != 0 or
@@ -7627,6 +8327,245 @@ fn decChainKernel(
         dec_chain_logged = true;
         log.info("dsv4: fused decode-chain kernel engaged\n", .{});
     }
+    return out;
+}
+
+/// Multi-row production sibling: the proven grid.z program is isolated from
+/// the byte-stable one-row source/object and returns `[C, H, D]`.
+fn decChainRowsKernel(
+    m: *const Dsv4Model,
+    x: mlx.mlx_array,
+    rows: usize,
+    H: usize,
+    D: usize,
+    rd: usize,
+    rms_w: ?mlx.mlx_array,
+    post: u8,
+    inverse: bool,
+    rr: *const RopeRows,
+) !?mlx.mlx_array {
+    std.debug.assert(rows > 1);
+    if (!decChainRowsEnabled() or !decChainEnabled() or !mlx.streamIsGpu(m.s)) return null;
+    std.debug.assert(mlx.mlx_array_size(x) == rows * H * D);
+    std.debug.assert(mlx.mlx_array_size(rr.cos) == rows * (rd / 2));
+    std.debug.assert(mlx.mlx_array_size(rr.sin) == rows * (rd / 2));
+    if (D > 1024 or rd == 0 or rd % 2 != 0 or rd > D) return null;
+    if (post == 1 and (D <= rd or (D - rd) % 64 != 0)) return null;
+    var hada_in: mlx.mlx_array = undefined;
+    if (post == 2) {
+        if (D % 32 != 0) return null;
+        const hg = m.hada_g orelse return null;
+        if (mlx.mlx_array_shape(hg)[0] != @as(c_int, @intCast(D))) return null;
+        hada_in = hg;
+    }
+    const kernel = decChainRowsObj() orelse return null;
+    const key = DecChainRowsKey{
+        .rows = @intCast(rows),
+        .h = @intCast(H),
+        .d = @intCast(D),
+        .rd = @intCast(rd),
+        .rms = rms_w != null,
+        .post = post,
+        .inv = inverse,
+        .tg = @intCast(emitTgFor(D)),
+    };
+    var cfg: mlx.mlx_fast_metal_kernel_config = undefined;
+    var cached = false;
+    for (&dec_chain_rows_cfg_cache) |*slot| {
+        if (slot.*) |sl| {
+            if (std.meta.eql(sl.key, key)) {
+                cfg = sl.cfg;
+                cached = true;
+                break;
+            }
+        } else {
+            const built = decChainRowsCfg(key) orelse return null;
+            slot.* = .{ .key = key, .cfg = built };
+            cfg = built;
+            cached = true;
+            break;
+        }
+    }
+    if (!cached) cfg = decChainRowsCfg(key) orelse return null;
+    defer if (!cached) {
+        _ = mlx.mlx_fast_metal_kernel_config_free(cfg);
+    };
+    const eps_arr = [_]f32{m.eps};
+    const eshape = [_]c_int{1};
+    const eps_g = uploadF32(&eps_arr, &eshape);
+    defer _ = mlx.mlx_array_free(eps_g);
+    const w_in = rms_w orelse rr.cos;
+    if (post != 2) hada_in = rr.cos;
+    const inputs_arr = [_]mlx.mlx_array{ x, w_in, rr.cos, rr.sin, hada_in, eps_g };
+    const inputs_vec = mlx.mlx_vector_array_new_data(&inputs_arr, inputs_arr.len);
+    defer _ = mlx.mlx_vector_array_free(inputs_vec);
+    var outputs_vec = mlx.mlx_vector_array_new();
+    defer _ = mlx.mlx_vector_array_free(outputs_vec);
+    try mlx.check(mlx.mlx_fast_metal_kernel_apply(&outputs_vec, kernel, inputs_vec, cfg, m.s));
+    if (mlx.mlx_vector_array_size(outputs_vec) != 1) return error.MetalKernelBadOutputCount;
+    var out = mlx.mlx_array_new();
+    try mlx.check(mlx.mlx_vector_array_get(&out, outputs_vec, 0));
+    dec_chain_hits += 1;
+    if (!dec_chain_logged) {
+        dec_chain_logged = true;
+        log.info("dsv4: fused decode-chain kernel engaged\n", .{});
+    }
+    return out;
+}
+
+/// The serial fallback for one decode-chain row. It deliberately operates on
+/// `[H, D]`, never a C-row tensor, so the no-kernel path has the same reduction
+/// shapes as `attentionDecodeGpu`.
+fn decChainRowComposed(
+    m: *const Dsv4Model,
+    x: mlx.mlx_array,
+    H: usize,
+    D: usize,
+    rd: usize,
+    rms_w: ?mlx.mlx_array,
+    post: u8,
+    inverse: bool,
+    rr: *const RopeRows,
+) !mlx.mlx_array {
+    const normalized = if (rms_w) |w| try gpuRms(x, w, m.eps, m.s) else x;
+    defer if (rms_w != null) {
+        _ = mlx.mlx_array_free(normalized);
+    };
+    const roped = try gpuRopeTail(normalized, rd, rr.cos, rr.sin, inverse, m.s);
+    if (post == 0) return roped;
+    defer _ = mlx.mlx_array_free(roped);
+    if (post == 1) {
+        const head = try gpuSliceCols(roped, H, 0, D - rd, m.s);
+        defer _ = mlx.mlx_array_free(head);
+        const head_sim = try gpuFp8Sim(head, m.s);
+        defer _ = mlx.mlx_array_free(head_sim);
+        const tail = try gpuSliceCols(roped, H, D - rd, D, m.s);
+        defer _ = mlx.mlx_array_free(tail);
+        return gpuConcat2(head_sim, tail, 1, m.s);
+    }
+    if (post == 2) {
+        const had = try gpuOp2(mlx.mlx_matmul, roped, m.hada_g.?, m.s);
+        defer _ = mlx.mlx_array_free(had);
+        return gpuFp4Sim(had, m.s);
+    }
+    return error.UnsupportedDecodeChainPost;
+}
+
+/// Rowwise composed variant for paths whose serial implementation predates
+/// `decChainKernel`, notably DSpark's main_kv conditioning rings. Do not fold
+/// this into `decChainRowsExact`: that helper intentionally mirrors the
+/// default fused serial decode chain when the kernel is enabled.
+fn decChainRowsComposed(
+    m: *const Dsv4Model,
+    x: mlx.mlx_array,
+    rows: usize,
+    H: usize,
+    D: usize,
+    rd: usize,
+    rms_w: ?mlx.mlx_array,
+    post: u8,
+    inverse: bool,
+    rr: *const RopeRows,
+) !mlx.mlx_array {
+    std.debug.assert(rows > 0);
+    const flat_shape = [_]c_int{ @intCast(rows), @intCast(H * D) };
+    const flat = try gpuReshape(x, &flat_shape, m.s);
+    defer _ = mlx.mlx_array_free(flat);
+    const parts = mlx.mlx_vector_array_new();
+    defer _ = mlx.mlx_vector_array_free(parts);
+    const half = rd / 2;
+    for (0..rows) |row_index| {
+        const row_flat = try gpuSliceRC(flat, row_index, row_index + 1, 0, H * D, m.s);
+        defer _ = mlx.mlx_array_free(row_flat);
+        const row_shape = [_]c_int{ @intCast(H), @intCast(D) };
+        const row = try gpuReshape(row_flat, &row_shape, m.s);
+        defer _ = mlx.mlx_array_free(row);
+        const cos = try gpuSliceRC(rr.cos, row_index, row_index + 1, 0, half, m.s);
+        defer _ = mlx.mlx_array_free(cos);
+        const sin = try gpuSliceRC(rr.sin, row_index, row_index + 1, 0, half, m.s);
+        defer _ = mlx.mlx_array_free(sin);
+        const row_rr = RopeRows{ .cos = cos, .sin = sin };
+        const y = try decChainRowComposed(m, row, H, D, rd, rms_w, post, inverse, &row_rr);
+        defer _ = mlx.mlx_array_free(y);
+        const y_shape = [_]c_int{ 1, @intCast(H * D) };
+        const y_flat = try gpuReshape(y, &y_shape, m.s);
+        defer _ = mlx.mlx_array_free(y_flat);
+        try mlx.check(mlx.mlx_vector_array_append_value(parts, y_flat));
+    }
+    var out = mlx.mlx_array_new();
+    errdefer _ = mlx.mlx_array_free(out);
+    try mlx.check(mlx.mlx_concatenate_axis(&out, parts, 0, m.s));
+    return out;
+}
+
+/// Exact verification route: first try one grid.z dispatch for the full
+/// DSpark chunk, then retain the direct one-row sequence as a strict fallback.
+fn decChainRowsExact(
+    m: *const Dsv4Model,
+    x: mlx.mlx_array,
+    rows: usize,
+    H: usize,
+    D: usize,
+    rd: usize,
+    rms_w: ?mlx.mlx_array,
+    post: u8,
+    inverse: bool,
+    rr: *const RopeRows,
+) !mlx.mlx_array {
+    std.debug.assert(rows > 0);
+    if (rows > 1) {
+        if (try decChainRowsKernel(m, x, rows, H, D, rd, rms_w, post, inverse, rr)) |out3| {
+            defer _ = mlx.mlx_array_free(out3);
+            const flat_shape = [_]c_int{ @intCast(rows), @intCast(H * D) };
+            return gpuReshape(out3, &flat_shape, m.s);
+        }
+    }
+    return decChainRowsExactPerRow(m, x, rows, H, D, rd, rms_w, post, inverse, rr);
+}
+
+/// Direct one-row decode-kernel reference, retained as the fallback and as
+/// the independent strict-test oracle for the promoted grid.z route.
+fn decChainRowsExactPerRow(
+    m: *const Dsv4Model,
+    x: mlx.mlx_array,
+    rows: usize,
+    H: usize,
+    D: usize,
+    rd: usize,
+    rms_w: ?mlx.mlx_array,
+    post: u8,
+    inverse: bool,
+    rr: *const RopeRows,
+) !mlx.mlx_array {
+    std.debug.assert(rows > 0);
+    const flat_shape = [_]c_int{ @intCast(rows), @intCast(H * D) };
+    const flat = try gpuReshape(x, &flat_shape, m.s);
+    defer _ = mlx.mlx_array_free(flat);
+    const parts = mlx.mlx_vector_array_new();
+    defer _ = mlx.mlx_vector_array_free(parts);
+    const half = rd / 2;
+    for (0..rows) |row_index| {
+        const row_flat = try gpuSliceRC(flat, row_index, row_index + 1, 0, H * D, m.s);
+        defer _ = mlx.mlx_array_free(row_flat);
+        const row_shape = [_]c_int{ @intCast(H), @intCast(D) };
+        const row = try gpuReshape(row_flat, &row_shape, m.s);
+        defer _ = mlx.mlx_array_free(row);
+        const cos = try gpuSliceRC(rr.cos, row_index, row_index + 1, 0, half, m.s);
+        defer _ = mlx.mlx_array_free(cos);
+        const sin = try gpuSliceRC(rr.sin, row_index, row_index + 1, 0, half, m.s);
+        defer _ = mlx.mlx_array_free(sin);
+        const row_rr = RopeRows{ .cos = cos, .sin = sin };
+        const y = (try decChainKernel(m, row, H, D, rd, rms_w, post, inverse, &row_rr)) orelse
+            try decChainRowComposed(m, row, H, D, rd, rms_w, post, inverse, &row_rr);
+        defer _ = mlx.mlx_array_free(y);
+        const y_shape = [_]c_int{ 1, @intCast(H * D) };
+        const y_flat = try gpuReshape(y, &y_shape, m.s);
+        defer _ = mlx.mlx_array_free(y_flat);
+        try mlx.check(mlx.mlx_vector_array_append_value(parts, y_flat));
+    }
+    var out = mlx.mlx_array_new();
+    errdefer _ = mlx.mlx_array_free(out);
+    try mlx.check(mlx.mlx_concatenate_axis(&out, parts, 0, m.s));
     return out;
 }
 
@@ -7826,7 +8765,348 @@ fn emitWindowsGpu(
     try mirror.appendGpu(final, n_win, m.s);
 }
 
-fn attentionBatch(m: *Dsv4Model, alloc: std.mem.Allocator, st: *Dsv4DecodeState, li: usize, x_g: mlx.mlx_array, c_tokens: usize, base: usize, rr: *const RopeRows, fr: *const Freqs, deferred: *std.ArrayList(DeferredCompRow)) !mlx.mlx_array {
+/// Serial-rank sliding-window attention for each verification row. The batch
+/// path normally pads earlier rows to the longest window in the chunk; masked
+/// padding is mathematically zero but changes the softmax reduction shape and
+/// can cross a later bf16 rounding boundary. This keeps each row's real key
+/// count while leaving every weight projection batched.
+fn attentionWindowRowsExact(
+    m: *const Dsv4Model,
+    q3: mlx.mlx_array,
+    kw: mlx.mlx_array,
+    sink: mlx.mlx_array,
+    rows: usize,
+    base: usize,
+    wk: usize,
+) !mlx.mlx_array {
+    const nh = m.n_heads;
+    const hd = m.head_dim;
+    const scale_f: f32 = @floatCast(1.0 / @sqrt(@as(f64, @floatFromInt(hd))));
+    const parts = mlx.mlx_vector_array_new();
+    defer _ = mlx.mlx_vector_array_free(parts);
+
+    for (0..rows) |row_index| {
+        const row_wk = @min(base + row_index + 1, m.window);
+        const prefix = wk - row_wk;
+        const strides = [_]c_int{ 1, 1, 1 };
+
+        var qrow3 = mlx.mlx_array_new();
+        defer _ = mlx.mlx_array_free(qrow3);
+        const qstart = [_]c_int{ @intCast(row_index), 0, 0 };
+        const qstop = [_]c_int{ @intCast(row_index + 1), @intCast(nh), @intCast(hd) };
+        try mlx.check(mlx.mlx_slice(&qrow3, q3, &qstart, 3, &qstop, 3, &strides, 3, m.s));
+        const qshape = [_]c_int{ @intCast(nh), @intCast(hd) };
+        const qrow = try gpuReshape(qrow3, &qshape, m.s);
+        defer _ = mlx.mlx_array_free(qrow);
+
+        var krow3 = mlx.mlx_array_new();
+        defer _ = mlx.mlx_array_free(krow3);
+        const kstart = [_]c_int{ @intCast(row_index), @intCast(prefix), 0 };
+        const kstop = [_]c_int{ @intCast(row_index + 1), @intCast(wk), @intCast(hd) };
+        try mlx.check(mlx.mlx_slice(&krow3, kw, &kstart, 3, &kstop, 3, &strides, 3, m.s));
+        const kshape = [_]c_int{ @intCast(row_wk), @intCast(hd) };
+        const krow = try gpuReshape(krow3, &kshape, m.s);
+        defer _ = mlx.mlx_array_free(krow);
+        const kt = try gpuOp1(mlx.mlx_transpose, krow, m.s);
+        defer _ = mlx.mlx_array_free(kt);
+        const scores0 = try gpuOp2(mlx.mlx_matmul, qrow, kt, m.s);
+        defer _ = mlx.mlx_array_free(scores0);
+
+        var probs_real = mlx.mlx_array_new();
+        defer _ = mlx.mlx_array_free(probs_real);
+        if (try sinkSoftmaxKernel(m, scores0, sink, nh, row_wk, scale_f)) |fused| {
+            defer _ = mlx.mlx_array_free(fused);
+            try mlx.check(mlx.mlx_array_set(&probs_real, fused));
+        } else {
+            const scale_arr = mlx.mlx_array_new_float(scale_f);
+            defer _ = mlx.mlx_array_free(scale_arr);
+            const scaled = try gpuOp2(mlx.mlx_multiply, scores0, scale_arr, m.s);
+            defer _ = mlx.mlx_array_free(scaled);
+            const with_sink = try gpuConcat2(scaled, sink, 1, m.s);
+            defer _ = mlx.mlx_array_free(with_sink);
+            var probs = mlx.mlx_array_new();
+            defer _ = mlx.mlx_array_free(probs);
+            try mlx.check(mlx.mlx_softmax_axis(&probs, with_sink, -1, true, m.s));
+            const pr = try gpuSliceCols(probs, nh, 0, row_wk, m.s);
+            defer _ = mlx.mlx_array_free(pr);
+            try mlx.check(mlx.mlx_array_set(&probs_real, pr));
+        }
+
+        const orow = try gpuOp2(mlx.mlx_matmul, probs_real, krow, m.s);
+        defer _ = mlx.mlx_array_free(orow);
+        const oshape = [_]c_int{ 1, @intCast(nh), @intCast(hd) };
+        const orow3 = try gpuReshape(orow, &oshape, m.s);
+        defer _ = mlx.mlx_array_free(orow3);
+        try mlx.check(mlx.mlx_vector_array_append_value(parts, orow3));
+    }
+
+    var out = mlx.mlx_array_new();
+    errdefer _ = mlx.mlx_array_free(out);
+    try mlx.check(mlx.mlx_concatenate_axis(&out, parts, 0, m.s));
+    return out;
+}
+
+/// Verification-only compressed attention. Each row receives exactly the
+/// serial key sequence: its unpadded window, then its visible compressed
+/// slots in serial selection order. The normal prefill arm remains batched.
+fn attentionCompressedRowsExact(
+    m: *const Dsv4Model,
+    li: usize,
+    q3: mlx.mlx_array,
+    qr_n: mlx.mlx_array,
+    x_g: mlx.mlx_array,
+    kw: mlx.mlx_array,
+    ls: *const LayerDecState,
+    rows: usize,
+    base: usize,
+    wk: usize,
+    rr: *const RopeRows,
+) !mlx.mlx_array {
+    const ly = &m.dw.layers[li];
+    const h = &m.hl[li];
+    const ratio: usize = ly.compress_ratio;
+    std.debug.assert(ratio != 0);
+    const nh = m.n_heads;
+    const hd = m.head_dim;
+    const rd = m.rd;
+    const scale_f: f32 = @floatCast(1.0 / @sqrt(@as(f64, @floatFromInt(hd))));
+
+    // The index query is exact row-wise already. Build it once as a batch so
+    // capture stays row-major, then slice the corresponding row below.
+    var qi_sim: ?mlx.mlx_array = null;
+    defer if (qi_sim) |arr| {
+        _ = mlx.mlx_array_free(arr);
+    };
+    if (ratio == 4) {
+        const available = @min(ls.comp_gpu.used, ls.idx_gpu.used);
+        if (@min(m.idx_topk, available) > 0) {
+            const ih = m.idx_heads;
+            const ihd = m.idx_hd;
+            const qi = try gpuQmmBatchedM1(&ly.idx.?.wq_b, qr_n, rows, m.s);
+            defer _ = mlx.mlx_array_free(qi);
+            try captureDifferentialStage(m, qi, li, .index_query_projection, rows);
+            const qi_exact = try decChainRowsExact(m, qi, rows, ih, ihd, rd, null, 2, false, rr);
+            defer _ = mlx.mlx_array_free(qi_exact);
+            const qshape = [_]c_int{ @intCast(rows), @intCast(ih), @intCast(ihd) };
+            qi_sim = try gpuReshape(qi_exact, &qshape, m.s);
+            try captureDifferentialStage(m, qi_sim.?, li, .index_query, rows);
+        }
+    }
+
+    const parts = mlx.mlx_vector_array_new();
+    defer _ = mlx.mlx_vector_array_free(parts);
+    for (0..rows) |row_index| {
+        const row_wk = @min(base + row_index + 1, m.window);
+        const prefix = wk - row_wk;
+        const strides3 = [_]c_int{ 1, 1, 1 };
+
+        var qrow3 = mlx.mlx_array_new();
+        defer _ = mlx.mlx_array_free(qrow3);
+        const qstart = [_]c_int{ @intCast(row_index), 0, 0 };
+        const qstop = [_]c_int{ @intCast(row_index + 1), @intCast(nh), @intCast(hd) };
+        try mlx.check(mlx.mlx_slice(&qrow3, q3, &qstart, 3, &qstop, 3, &strides3, 3, m.s));
+        const qshape = [_]c_int{ @intCast(nh), @intCast(hd) };
+        const qrow = try gpuReshape(qrow3, &qshape, m.s);
+        defer _ = mlx.mlx_array_free(qrow);
+
+        var win3 = mlx.mlx_array_new();
+        defer _ = mlx.mlx_array_free(win3);
+        const wstart = [_]c_int{ @intCast(row_index), @intCast(prefix), 0 };
+        const wstop = [_]c_int{ @intCast(row_index + 1), @intCast(wk), @intCast(hd) };
+        try mlx.check(mlx.mlx_slice(&win3, kw, &wstart, 3, &wstop, 3, &strides3, 3, m.s));
+        const wshape = [_]c_int{ @intCast(row_wk), @intCast(hd) };
+        const win = try gpuReshape(win3, &wshape, m.s);
+        defer _ = mlx.mlx_array_free(win);
+
+        var picked: ?mlx.mlx_array = null;
+        defer if (picked) |arr| {
+            _ = mlx.mlx_array_free(arr);
+        };
+        var n_sel: usize = 0;
+        if (ratio == 4) {
+            const available = @min(@min((base + row_index + 1) / ratio, ls.comp_gpu.used), ls.idx_gpu.used);
+            const k = @min(m.idx_topk, available);
+            if (k > 0) {
+                const ih = m.idx_heads;
+                const ihd = m.idx_hd;
+                const qis = qi_sim.?;
+                var qirow3 = mlx.mlx_array_new();
+                defer _ = mlx.mlx_array_free(qirow3);
+                const istart = [_]c_int{ @intCast(row_index), 0, 0 };
+                const istop = [_]c_int{ @intCast(row_index + 1), @intCast(ih), @intCast(ihd) };
+                try mlx.check(mlx.mlx_slice(&qirow3, qis, &istart, 3, &istop, 3, &strides3, 3, m.s));
+                const ishape = [_]c_int{ @intCast(ih), @intCast(ihd) };
+                const qirow = try gpuReshape(qirow3, &ishape, m.s);
+                defer _ = mlx.mlx_array_free(qirow);
+                const islots = try ls.idx_gpu.sliceRows(0, available, m.s);
+                defer _ = mlx.mlx_array_free(islots);
+                const it = try gpuOp1(mlx.mlx_transpose, islots, m.s);
+                defer _ = mlx.mlx_array_free(it);
+                const scores = try gpuOp2(mlx.mlx_matmul, qirow, it, m.s);
+                defer _ = mlx.mlx_array_free(scores);
+                const zero = mlx.mlx_array_new_float(0.0);
+                defer _ = mlx.mlx_array_free(zero);
+                const relu = try gpuOp2(mlx.mlx_maximum, scores, zero, m.s);
+                defer _ = mlx.mlx_array_free(relu);
+
+                const xrow = try gpuSliceRC(x_g, row_index, row_index + 1, 0, m.dim, m.s);
+                defer _ = mlx.mlx_array_free(xrow);
+                const wts = try gpuOp2(mlx.mlx_matmul, xrow, h.idx_wp_t.?, m.s);
+                defer _ = mlx.mlx_array_free(wts);
+                const wscale = mlx.mlx_array_new_float(@floatCast(1.0 / (@sqrt(@as(f64, @floatFromInt(ihd))) * @sqrt(@as(f64, @floatFromInt(ih))))));
+                defer _ = mlx.mlx_array_free(wscale);
+                const wts_s = try gpuOp2(mlx.mlx_multiply, wts, wscale, m.s);
+                defer _ = mlx.mlx_array_free(wts_s);
+                const summed2 = try gpuOp2(mlx.mlx_matmul, wts_s, relu, m.s);
+                defer _ = mlx.mlx_array_free(summed2);
+                const sshape = [_]c_int{@intCast(available)};
+                const summed = try gpuReshape(summed2, &sshape, m.s);
+                defer _ = mlx.mlx_array_free(summed);
+                const all_slots = try ls.comp_gpu.sliceRows(0, available, m.s);
+                defer _ = mlx.mlx_array_free(all_slots);
+                var picked_row = mlx.mlx_array_new();
+                errdefer if (picked == null) {
+                    _ = mlx.mlx_array_free(picked_row);
+                };
+                if (available > k) {
+                    var partition = mlx.mlx_array_new();
+                    defer _ = mlx.mlx_array_free(partition);
+                    try mlx.check(mlx.mlx_argpartition_axis(&partition, summed, @intCast(available - k), 0, m.s));
+                    const selected = try gpuSlice1d(partition, available - k, available, m.s);
+                    defer _ = mlx.mlx_array_free(selected);
+                    try mlx.check(mlx.mlx_take_axis(&picked_row, all_slots, selected, 0, m.s));
+                } else {
+                    try mlx.check(mlx.mlx_astype(&picked_row, all_slots, .float32, m.s));
+                }
+                picked = picked_row;
+                n_sel = k;
+            }
+        } else {
+            const available = @min((base + row_index + 1) / ratio, ls.comp_gpu.used);
+            if (available > 0) {
+                const all_slots = try ls.comp_gpu.sliceRows(0, available, m.s);
+                defer _ = mlx.mlx_array_free(all_slots);
+                var picked_row = mlx.mlx_array_new();
+                errdefer if (picked == null) {
+                    _ = mlx.mlx_array_free(picked_row);
+                };
+                try mlx.check(mlx.mlx_astype(&picked_row, all_slots, .float32, m.s));
+                picked = picked_row;
+                n_sel = available;
+            }
+        }
+
+        var kmat = mlx.mlx_array_new();
+        defer _ = mlx.mlx_array_free(kmat);
+        if (picked) |selected| {
+            const keys = mlx.mlx_vector_array_new();
+            defer _ = mlx.mlx_vector_array_free(keys);
+            try mlx.check(mlx.mlx_vector_array_append_value(keys, win));
+            try mlx.check(mlx.mlx_vector_array_append_value(keys, selected));
+            try mlx.check(mlx.mlx_concatenate_axis(&kmat, keys, 0, m.s));
+        } else {
+            try mlx.check(mlx.mlx_astype(&kmat, win, .float32, m.s));
+        }
+        const tk = row_wk + n_sel;
+        const kt = try gpuOp1(mlx.mlx_transpose, kmat, m.s);
+        defer _ = mlx.mlx_array_free(kt);
+        const scores0 = try gpuOp2(mlx.mlx_matmul, qrow, kt, m.s);
+        defer _ = mlx.mlx_array_free(scores0);
+        var probs_real = mlx.mlx_array_new();
+        defer _ = mlx.mlx_array_free(probs_real);
+        if (try sinkSoftmaxKernel(m, scores0, h.sink_gpu, nh, tk, scale_f)) |fused| {
+            defer _ = mlx.mlx_array_free(fused);
+            try mlx.check(mlx.mlx_array_set(&probs_real, fused));
+        } else {
+            const scale_arr = mlx.mlx_array_new_float(scale_f);
+            defer _ = mlx.mlx_array_free(scale_arr);
+            const scaled = try gpuOp2(mlx.mlx_multiply, scores0, scale_arr, m.s);
+            defer _ = mlx.mlx_array_free(scaled);
+            const with_sink = try gpuConcat2(scaled, h.sink_gpu, 1, m.s);
+            defer _ = mlx.mlx_array_free(with_sink);
+            var probs = mlx.mlx_array_new();
+            defer _ = mlx.mlx_array_free(probs);
+            try mlx.check(mlx.mlx_softmax_axis(&probs, with_sink, -1, true, m.s));
+            const pr = try gpuSliceCols(probs, nh, 0, tk, m.s);
+            defer _ = mlx.mlx_array_free(pr);
+            try mlx.check(mlx.mlx_array_set(&probs_real, pr));
+        }
+        const orow = try gpuOp2(mlx.mlx_matmul, probs_real, kmat, m.s);
+        defer _ = mlx.mlx_array_free(orow);
+        const oshape = [_]c_int{ 1, @intCast(nh), @intCast(hd) };
+        const orow3 = try gpuReshape(orow, &oshape, m.s);
+        defer _ = mlx.mlx_array_free(orow3);
+        try mlx.check(mlx.mlx_vector_array_append_value(parts, orow3));
+    }
+
+    var out = mlx.mlx_array_new();
+    errdefer _ = mlx.mlx_array_free(out);
+    try mlx.check(mlx.mlx_concatenate_axis(&out, parts, 0, m.s));
+    return out;
+}
+
+fn attentionOutputBatch(
+    m: *const Dsv4Model,
+    li: usize,
+    o: mlx.mlx_array,
+    rows: usize,
+    rr: *const RopeRows,
+    serial_verify_qmm: bool,
+) !mlx.mlx_array {
+    const nh = m.n_heads;
+    const hd = m.head_dim;
+    const rd = m.rd;
+    const cc: c_int = @intCast(rows);
+    try captureDifferentialStage(m, o, li, .attention_value_mix, rows);
+    const o_inv = if (serial_verify_qmm) blk: {
+        const o_exact = try decChainRowsExact(m, o, rows, nh, hd, rd, null, 0, true, rr);
+        defer _ = mlx.mlx_array_free(o_exact);
+        const oshape = [_]c_int{ cc, @intCast(nh), @intCast(hd) };
+        break :blk try gpuReshape(o_exact, &oshape, m.s);
+    } else try gpuRopeTailRows(o, rd, rr.cos, rr.sin, true, m.s);
+    defer _ = mlx.mlx_array_free(o_inv);
+    try captureDifferentialStage(m, o_inv, li, .attention_inverse_rope, rows);
+
+    const og = m.o_groups;
+    const ol = m.o_lora;
+    const gin = nh * hd / og;
+    const o2shape = [_]c_int{ cc, @intCast(og), @intCast(gin) };
+    const o2 = try gpuReshape(o_inv, &o2shape, m.s);
+    defer _ = mlx.mlx_array_free(o2);
+    const gaxes = [_]c_int{ 1, 0, 2 };
+    var ot = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(ot);
+    try mlx.check(mlx.mlx_transpose_axes(&ot, o2, &gaxes, 3, m.s));
+    var ob = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(ob);
+    try mlx.check(mlx.mlx_astype(&ob, ot, .bfloat16, m.s));
+    if (differential_capture != null) {
+        var ob_rows = mlx.mlx_array_new();
+        defer _ = mlx.mlx_array_free(ob_rows);
+        try mlx.check(mlx.mlx_transpose_axes(&ob_rows, ob, &gaxes, 3, m.s));
+        try captureDifferentialStage(m, ob_rows, li, .attention_output_input, rows);
+    }
+    const ored = if (serial_verify_qmm)
+        try woAMatmulBatchedM1(m, li, ob, rows)
+    else
+        try woAMatmul(m, li, ob);
+    defer _ = mlx.mlx_array_free(ored);
+    var ort = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(ort);
+    try mlx.check(mlx.mlx_transpose_axes(&ort, ored, &gaxes, 3, m.s));
+    const orshape = [_]c_int{ cc, @intCast(og * ol) };
+    const orr = try gpuReshape(ort, &orshape, m.s);
+    defer _ = mlx.mlx_array_free(orr);
+    try captureDifferentialStage(m, orr, li, .attention_output_a, rows);
+    const out = if (serial_verify_qmm)
+        try gpuQmmBatchedM1(&m.dw.layers[li].wo_b, orr, rows, m.s)
+    else
+        try gpuQmmB(&m.dw.layers[li].wo_b, orr, m.s);
+    try captureDifferentialStage(m, out, li, .attention_output_b, rows);
+    return out;
+}
+
+fn attentionBatch(m: *Dsv4Model, alloc: std.mem.Allocator, st: *Dsv4DecodeState, li: usize, x_g: mlx.mlx_array, c_tokens: usize, base: usize, rr: *const RopeRows, fr: *const Freqs, serial_verify_qmm: bool, deferred: *std.ArrayList(DeferredCompRow)) !mlx.mlx_array {
     const ly = &m.dw.layers[li];
     const h = &m.hl[li];
     const ls = &st.layers[li];
@@ -7839,16 +9119,30 @@ fn attentionBatch(m: *Dsv4Model, alloc: std.mem.Allocator, st: *Dsv4DecodeState,
 
     // q chain [C, nh, hd]
     const qr_n = blk: {
-        const qr = try gpuQmmB(&ly.wq_a, x_g, m.s);
+        const qr = if (serial_verify_qmm)
+            try gpuQmmBatchedM1(&ly.wq_a, x_g, C, m.s)
+        else
+            try gpuQmmB(&ly.wq_a, x_g, m.s);
         defer _ = mlx.mlx_array_free(qr);
-        break :blk try gpuRms(qr, h.q_norm_g, m.eps, m.s);
+        try captureDifferentialStage(m, qr, li, .query_a_projection, C);
+        const qr_norm = try gpuRms(qr, h.q_norm_g, m.eps, m.s);
+        try captureDifferentialStage(m, qr_norm, li, .query_a_norm, C);
+        break :blk qr_norm;
     };
     defer _ = mlx.mlx_array_free(qr_n);
     const q3 = blk: {
-        const q_flat = try gpuQmmB(&ly.wq_b, qr_n, m.s);
+        const q_flat = if (serial_verify_qmm)
+            try gpuQmmBatchedM1(&ly.wq_b, qr_n, C, m.s)
+        else
+            try gpuQmmB(&ly.wq_b, qr_n, m.s);
         defer _ = mlx.mlx_array_free(q_flat);
         try captureDifferentialStage(m, q_flat, li, .query_projection, C);
         const qshape = [_]c_int{ cc, @intCast(nh), @intCast(hd) };
+        if (serial_verify_qmm) {
+            const q_exact = try decChainRowsExact(m, q_flat, C, nh, hd, rd, m.ones_hd_g, 0, false, rr);
+            defer _ = mlx.mlx_array_free(q_exact);
+            break :blk try gpuReshape(q_exact, &qshape, m.s);
+        }
         const q_r = try gpuReshape(q_flat, &qshape, m.s);
         defer _ = mlx.mlx_array_free(q_r);
         const q_rms = try gpuRms(q_r, m.ones_hd_g, m.eps, m.s);
@@ -7861,19 +9155,26 @@ fn attentionBatch(m: *Dsv4Model, alloc: std.mem.Allocator, st: *Dsv4DecodeState,
 
     // kv chain [C, hd] → append C rows
     {
-        const kv0 = try gpuQmmB(&ly.wkv, x_g, m.s);
+        const kv0 = if (serial_verify_qmm)
+            try gpuQmmBatchedM1(&ly.wkv, x_g, C, m.s)
+        else
+            try gpuQmmB(&ly.wkv, x_g, m.s);
         defer _ = mlx.mlx_array_free(kv0);
-        const kv_n = try gpuRms(kv0, h.kv_norm_g, m.eps, m.s);
-        defer _ = mlx.mlx_array_free(kv_n);
-        const kv_rot = try gpuRopeTailRows(kv_n, rd, rr.cos, rr.sin, false, m.s);
-        defer _ = mlx.mlx_array_free(kv_rot);
-        const head0 = try gpuSliceCols(kv_rot, C, 0, hd - rd, m.s);
-        defer _ = mlx.mlx_array_free(head0);
-        const head_sim = try gpuFp8Sim(head0, m.s);
-        defer _ = mlx.mlx_array_free(head_sim);
-        const tail = try gpuSliceCols(kv_rot, C, hd - rd, hd, m.s);
-        defer _ = mlx.mlx_array_free(tail);
-        const kv_fin = try gpuConcat2(head_sim, tail, 1, m.s);
+        const kv_fin = if (serial_verify_qmm)
+            try decChainRowsExact(m, kv0, C, 1, hd, rd, h.kv_norm_g, 1, false, rr)
+        else blk: {
+            const kv_n = try gpuRms(kv0, h.kv_norm_g, m.eps, m.s);
+            defer _ = mlx.mlx_array_free(kv_n);
+            const kv_rot = try gpuRopeTailRows(kv_n, rd, rr.cos, rr.sin, false, m.s);
+            defer _ = mlx.mlx_array_free(kv_rot);
+            const head0 = try gpuSliceCols(kv_rot, C, 0, hd - rd, m.s);
+            defer _ = mlx.mlx_array_free(head0);
+            const head_sim = try gpuFp8Sim(head0, m.s);
+            defer _ = mlx.mlx_array_free(head_sim);
+            const tail = try gpuSliceCols(kv_rot, C, hd - rd, hd, m.s);
+            defer _ = mlx.mlx_array_free(tail);
+            break :blk try gpuConcat2(head_sim, tail, 1, m.s);
+        };
         defer _ = mlx.mlx_array_free(kv_fin);
         try captureDifferentialStage(m, kv_fin, li, .key_value, C);
         try ls.kv_gpu.appendGpu(kv_fin, C, m.s);
@@ -7885,7 +9186,8 @@ fn attentionBatch(m: *Dsv4Model, alloc: std.mem.Allocator, st: *Dsv4DecodeState,
     // after the layer loop (`processDeferredCompChunk`) exactly as the decode
     // path defers non-boundary positions.
     if (ratio != 0) {
-        const comp_in = try compInProj(m, h, li, x_g, C);
+        const comp_in = try compInProj(m, h, li, x_g, C, serial_verify_qmm);
+        try captureDifferentialStage(m, comp_in, li, .compressor_input, C);
         const closes_attn = chunkCrossesBoundary(base, C, ratio);
         const closes_idx = ls.idx_comp != null and chunkCrossesBoundary(base, C, 4);
         const closes = closes_attn or closes_idx;
@@ -7961,6 +9263,17 @@ fn attentionBatch(m: *Dsv4Model, alloc: std.mem.Allocator, st: *Dsv4DecodeState,
     defer _ = mlx.mlx_array_free(kw);
     try mlx.check(mlx.mlx_take_axis(&kw, kv_all, w_clamped, 0, m.s)); // [C, wk, hd]
 
+    // Verification keeps every row's serial key sequence. Normal prefill
+    // (.last_host) remains on the fused batched path below.
+    if (serial_verify_qmm) {
+        const o_exact = if (ratio == 0)
+            try attentionWindowRowsExact(m, q3, kw, h.sink_gpu, C, base, wk)
+        else
+            try attentionCompressedRowsExact(m, li, q3, qr_n, x_g, kw, ls, C, base, wk, rr);
+        defer _ = mlx.mlx_array_free(o_exact);
+        return attentionOutputBatch(m, li, o_exact, C, rr, serial_verify_qmm);
+    }
+
     // compressed arm: per-token gathered top-k (ratio 4) or shared all-slot
     // K with the visibility mask (other ratios)
     var kc: ?mlx.mlx_array = null;
@@ -7983,8 +9296,12 @@ fn attentionBatch(m: *Dsv4Model, alloc: std.mem.Allocator, st: *Dsv4DecodeState,
             const ih = m.idx_heads;
             const ihd = m.idx_hd;
             const qi_sim = blk: {
-                const qi = try gpuQmmB(&ly.idx.?.wq_b, qr_n, m.s);
+                const qi = if (serial_verify_qmm)
+                    try gpuQmmBatchedM1(&ly.idx.?.wq_b, qr_n, C, m.s)
+                else
+                    try gpuQmmB(&ly.idx.?.wq_b, qr_n, m.s);
                 defer _ = mlx.mlx_array_free(qi);
+                try captureDifferentialStage(m, qi, li, .index_query_projection, C);
                 const qsh = [_]c_int{ cc, @intCast(ih), @intCast(ihd) };
                 const qi_r = try gpuReshape(qi, &qsh, m.s);
                 defer _ = mlx.mlx_array_free(qi_r);
@@ -7995,6 +9312,7 @@ fn attentionBatch(m: *Dsv4Model, alloc: std.mem.Allocator, st: *Dsv4DecodeState,
                 break :blk try gpuFp4Sim(qi_had, m.s);
             };
             defer _ = mlx.mlx_array_free(qi_sim);
+            try captureDifferentialStage(m, qi_sim, li, .index_query, C);
             const islots = try ls.idx_gpu.sliceRows(0, S, m.s);
             defer _ = mlx.mlx_array_free(islots);
             const it_ = try gpuOp1(mlx.mlx_transpose, islots, m.s);
@@ -8175,31 +9493,7 @@ fn attentionBatch(m: *Dsv4Model, alloc: std.mem.Allocator, st: *Dsv4DecodeState,
         _ = mlx.mlx_array_free(o);
         o = o_sum;
     }
-    const o_inv = try gpuRopeTailRows(o, rd, rr.cos, rr.sin, true, m.s);
-    defer _ = mlx.mlx_array_free(o_inv);
-    // grouped low-rank O: [og, C, gin] bf16 @ wo_a_deq [og, gin, ol]
-    const og = m.o_groups;
-    const ol = m.o_lora;
-    const gin = nh * hd / og;
-    const o2shape = [_]c_int{ cc, @intCast(og), @intCast(gin) };
-    const o2 = try gpuReshape(o_inv, &o2shape, m.s);
-    defer _ = mlx.mlx_array_free(o2);
-    const gaxes = [_]c_int{ 1, 0, 2 };
-    var ot = mlx.mlx_array_new();
-    defer _ = mlx.mlx_array_free(ot);
-    try mlx.check(mlx.mlx_transpose_axes(&ot, o2, &gaxes, 3, m.s));
-    var ob = mlx.mlx_array_new();
-    defer _ = mlx.mlx_array_free(ob);
-    try mlx.check(mlx.mlx_astype(&ob, ot, .bfloat16, m.s));
-    const ored = try woAMatmul(m, li, ob); // [og, C, ol]
-    defer _ = mlx.mlx_array_free(ored);
-    var ort = mlx.mlx_array_new();
-    defer _ = mlx.mlx_array_free(ort);
-    try mlx.check(mlx.mlx_transpose_axes(&ort, ored, &gaxes, 3, m.s)); // [C, og, ol]
-    const orshape = [_]c_int{ cc, @intCast(og * ol) };
-    const orr = try gpuReshape(ort, &orshape, m.s);
-    defer _ = mlx.mlx_array_free(orr);
-    return try gpuQmmB(&ly.wo_b, orr, m.s); // [C, d]
+    return attentionOutputBatch(m, li, o, C, rr, serial_verify_qmm);
 }
 
 /// Sub-chunk cap: bounds the attention gather transient
@@ -8304,6 +9598,10 @@ fn extendChunk(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, ids:
     const a = arena.allocator();
     const base = st.n;
     const C = ids.len;
+    const serial_verify_qmm = switch (mode) {
+        .all_host, .all_gpu => true,
+        .last_host => false,
+    };
     const cc: c_int = @intCast(C);
     st.n += C;
     const d = m.dim;
@@ -8354,11 +9652,18 @@ fn extendChunk(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, ids:
         const fr = if (ratio != 0) fr_yarn else fr_plain;
         const rr = if (ratio != 0) &rr_yarn else &rr_plain;
         {
-            const pre = try hcPreBatch(m, a, stream_g, C, h.hc_attn_fn_t, h.hc_attn_scale, h.hc_attn_base, ly.hc_attn_scale, ly.hc_attn_base);
+            const pre = try hcPreBatch(m, a, stream_g, C, h.hc_attn_fn_t, h.hc_attn_scale, h.hc_attn_base, ly.hc_attn_scale, ly.hc_attn_base, serial_verify_qmm);
             defer freeHcPre(&pre);
+            try captureDifferentialStage(m, pre.y, li, .attention_hc_pre_y, C);
+            if (pre.pk) |pk| {
+                try captureDifferentialStage(m, pk, li, .attention_hc_pack, C);
+            } else {
+                try captureDifferentialStage(m, pre.post_g, li, .attention_hc_post_coeff, C);
+                try captureDifferentialStage(m, pre.combT_g, li, .attention_hc_residual_coeff, C);
+            }
             const x = try gpuRms(pre.y, h.attn_norm_g, m.eps, m.s);
             defer _ = mlx.mlx_array_free(x);
-            const attn_out = try attentionBatch(m, a, st, li, x, C, base, rr, fr, &deferred);
+            const attn_out = try attentionBatch(m, a, st, li, x, C, base, rr, fr, serial_verify_qmm, &deferred);
             defer _ = mlx.mlx_array_free(attn_out);
             const ns = try hcPostBatch(m, stream_g, attn_out, C, &pre);
             try captureDifferentialStage(m, ns, li, .attention, C);
@@ -8366,11 +9671,11 @@ fn extendChunk(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, ids:
             stream_g = ns;
         }
         {
-            const pre = try hcPreBatch(m, a, stream_g, C, h.hc_ffn_fn_t, h.hc_ffn_scale, h.hc_ffn_base, ly.hc_ffn_scale, ly.hc_ffn_base);
+            const pre = try hcPreBatch(m, a, stream_g, C, h.hc_ffn_fn_t, h.hc_ffn_scale, h.hc_ffn_base, ly.hc_ffn_scale, ly.hc_ffn_base, serial_verify_qmm);
             defer freeHcPre(&pre);
             const x = try gpuRms(pre.y, h.ffn_norm_g, m.eps, m.s);
             defer _ = mlx.mlx_array_free(x);
-            const ffn_out = try moeGpu(m, a, li, x, ids, trace_call);
+            const ffn_out = try moeGpuWithM1(m, a, li, x, ids, trace_call, serial_verify_qmm);
             defer _ = mlx.mlx_array_free(ffn_out);
             const ns = try hcPostBatch(m, stream_g, ffn_out, C, &pre);
             try captureDifferentialStage(m, ns, li, .moe, C);
@@ -8395,7 +9700,7 @@ fn extendChunk(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, ids:
         var mh = mlx.mlx_array_new();
         defer _ = mlx.mlx_array_free(mh);
         try mlx.check(mlx.mlx_concatenate_axis(&mh, vec, 1, m.s));
-        try appendDsparkMainKv(m, st, mh, C, &rr_plain);
+        try appendDsparkMainKv(m, st, mh, C, &rr_plain, serial_verify_qmm);
     }
     if (m.ds_prof != null) m.ds_prof_layers_ns = chunk_clk.lap();
     const out = if (comptime mode == .all_gpu)
@@ -8447,8 +9752,9 @@ fn headLogitsBatchG(m: *const Dsv4Model, alloc: std.mem.Allocator, stream_g: mlx
     const fshape = [_]c_int{ cc, @intCast(hcm * d) };
     const flat = try gpuReshape(stream_g, &fshape, m.s);
     defer _ = mlx.mlx_array_free(flat);
-    const mixes_g = try gpuOp2(mlx.mlx_matmul, flat, m.hc_head_fn_t, m.s);
+    const mixes_g = try gpuMatmulBatchedM1(flat, m.hc_head_fn_t, C, m.s);
     defer _ = mlx.mlx_array_free(mixes_g);
+    try captureDifferentialStage(m, mixes_g, m.n_layers, .head_mix, C);
     const sq = try gpuOp1(mlx.mlx_square, flat, m.s);
     defer _ = mlx.mlx_array_free(sq);
     var ssum = mlx.mlx_array_new();
@@ -8485,9 +9791,11 @@ fn headLogitsBatchG(m: *const Dsv4Model, alloc: std.mem.Allocator, stream_g: mlx
     var hout = mlx.mlx_array_new();
     defer _ = mlx.mlx_array_free(hout);
     try mlx.check(mlx.mlx_sum_axis(&hout, weighted, 1, false, m.s)); // [C, d]
+    try captureDifferentialStage(m, hout, m.n_layers, .head_collapse, C);
     const hn = try gpuRms(hout, m.final_norm_g, m.eps, m.s);
     defer _ = mlx.mlx_array_free(hn);
-    return try gpuQmmB(&m.dw.head, hn, m.s);
+    try captureDifferentialStage(m, hn, m.n_layers, .head_norm, C);
+    return try gpuQmmBatchedM1(&m.dw.head, hn, C, m.s);
 }
 
 // ── DSpark draft (forward_spec at start_pos > 0, greedy) ───────────────
@@ -8840,7 +10148,7 @@ pub fn dsparkDraft(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, 
         const h = &m.hl[li];
         const ly = &m.dw.layers[li];
         {
-            const pre = try hcPreBatch(m, a, stream_g, B, h.hc_attn_fn_t, h.hc_attn_scale, h.hc_attn_base, ly.hc_attn_scale, ly.hc_attn_base);
+            const pre = try hcPreBatch(m, a, stream_g, B, h.hc_attn_fn_t, h.hc_attn_scale, h.hc_attn_base, ly.hc_attn_scale, ly.hc_attn_base, false);
             defer freeHcPre(&pre);
             const x = try gpuRms(pre.y, h.attn_norm_g, m.eps, m.s);
             defer _ = mlx.mlx_array_free(x);
@@ -8862,7 +10170,7 @@ pub fn dsparkDraft(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, 
             stream_g = ns;
         }
         {
-            const pre = try hcPreBatch(m, a, stream_g, B, h.hc_ffn_fn_t, h.hc_ffn_scale, h.hc_ffn_base, ly.hc_ffn_scale, ly.hc_ffn_base);
+            const pre = try hcPreBatch(m, a, stream_g, B, h.hc_ffn_fn_t, h.hc_ffn_scale, h.hc_ffn_base, ly.hc_ffn_scale, ly.hc_ffn_base, false);
             defer freeHcPre(&pre);
             const x = try gpuRms(pre.y, h.ffn_norm_g, m.eps, m.s);
             defer _ = mlx.mlx_array_free(x);
@@ -9273,8 +10581,8 @@ fn dsparkRoundWith(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, 
             if (!std.math.isFinite(v)) d_nan += 1;
         }
         log.info("[dspark-trace] n={d} t1={d} draft={any} verify_am={any} accepted={d} next={d} conf={any} nan(verify)={d}/{d} nan(draft)={d}/{d}\n", .{
-            st.n - (B + 1),  t1,         draft.ids[1 .. B + 1], vam[0..B], accepted, next_am, draft.confidence,
-            v_nan,           vl.len,     d_nan,                 draft.logits.len,
+            st.n - (B + 1), t1,     draft.ids[1 .. B + 1], vam[0..B],        accepted, next_am, draft.confidence,
+            v_nan,          vl.len, d_nan,                 draft.logits.len,
         });
     }
 
@@ -9980,6 +11288,125 @@ test "dsv4: fused decode-chain kernel matches the composed q/kv/idx/o chains (GP
     }
 }
 
+test "dsv4: grid-z decode-chain rows toggle overrides independently" {
+    const previous = dec_chain_rows_state;
+    defer decChainRowsSetForTest(previous);
+    decChainRowsSetForTest(true);
+    try testing.expect(decChainRowsEnabled());
+    decChainRowsSetForTest(false);
+    try testing.expect(!decChainRowsEnabled());
+    decChainRowsSetForTest(true);
+    try testing.expect(decChainRowsEnabled());
+}
+
+test "dsv4: grid-z decode-chain path exactly matches one-row kernels (GPU)" {
+    if (mlx.noGpuBackend()) return;
+    const s = mlx.gpuStream();
+    defer _ = mlx.mlx_stream_free(s);
+    const alloc = testing.allocator;
+    const hada = try buildHadamardF32(alloc, 128, s);
+    defer _ = mlx.mlx_array_free(hada);
+    // These are the serving geometries, not mini substitutes: q, kv,
+    // inverse-output, and indexer-q respectively.
+    const Case = struct { name: []const u8, H: usize, D: usize, rd: usize, rms: bool, ones_w: bool, post: u8, inv: bool };
+    const cases = [_]Case{
+        .{ .name = "q", .H = 64, .D = 512, .rd = 64, .rms = true, .ones_w = true, .post = 0, .inv = false },
+        .{ .name = "kv", .H = 1, .D = 512, .rd = 64, .rms = true, .ones_w = false, .post = 1, .inv = false },
+        .{ .name = "inverse-output", .H = 64, .D = 512, .rd = 64, .rms = false, .ones_w = false, .post = 0, .inv = true },
+        .{ .name = "index-q", .H = 64, .D = 128, .rd = 64, .rms = false, .ones_w = false, .post = 2, .inv = false },
+    };
+    const Ops = struct {
+        fn expectShape(a: mlx.mlx_array, want: []const c_int) !void {
+            try testing.expectEqual(want.len, mlx.mlx_array_ndim(a));
+            const got = mlx.mlx_array_shape(a);
+            for (want, 0..) |dim, i| try testing.expectEqual(dim, got[i]);
+        }
+
+        fn hash(values: []const f32) u64 {
+            return std.hash.Wyhash.hash(0, std.mem.sliceAsBytes(values));
+        }
+
+        fn maxAbs(a: []const f32, b: []const f32) f32 {
+            var out: f32 = 0;
+            for (a, b) |av, bv| out = @max(out, @abs(av - bv));
+            return out;
+        }
+
+        fn expectExact(case_name: []const u8, rows: usize, expected: []const f32, got: []const f32) !void {
+            const expected_hash = hash(expected);
+            const got_hash = hash(got);
+            const max_abs = maxAbs(expected, got);
+            std.debug.print("[dsv4-dec-chain-grid-z] {s} C={d}: hash_expected={x} hash_got={x} max_abs={e}\n", .{ case_name, rows, expected_hash, got_hash, max_abs });
+            try testing.expectEqual(expected_hash, got_hash);
+            try testing.expectEqual(@as(f32, 0), max_abs);
+            try testing.expectEqualSlices(f32, expected, got);
+        }
+    };
+    var rng = std.Random.DefaultPrng.init(107);
+    const previous_rows_state = dec_chain_rows_state;
+    defer decChainRowsSetForTest(previous_rows_state);
+    decChainRowsSetForTest(true);
+    decChainSetForTest(true);
+    defer decChainSetForTest(null);
+
+    for (cases) |tc| {
+        var m: Dsv4Model = undefined;
+        m.s = s;
+        m.eps = 1e-6;
+        m.hada_g = hada;
+        const half = tc.rd / 2;
+        const ws = try alloc.alloc(f32, tc.D);
+        defer alloc.free(ws);
+        for (ws) |*v| v.* = if (tc.ones_w) 1.0 else 0.5 + rng.random().float(f32);
+        const wshape = [_]c_int{@intCast(tc.D)};
+        const w = uploadF32(ws, &wshape);
+        defer _ = mlx.mlx_array_free(w);
+
+        for (2..7) |C| {
+            const xs = try alloc.alloc(f32, C * tc.H * tc.D);
+            defer alloc.free(xs);
+            for (xs) |*v| v.* = (rng.random().float(f32) - 0.5) * 4.0;
+            const xshape = [_]c_int{ @intCast(C), @intCast(tc.H * tc.D) };
+            const x = uploadF32(xs, &xshape);
+            defer _ = mlx.mlx_array_free(x);
+            const cos_h = try alloc.alloc(f32, C * half);
+            defer alloc.free(cos_h);
+            const sin_h = try alloc.alloc(f32, C * half);
+            defer alloc.free(sin_h);
+            for (cos_h) |*v| v.* = (rng.random().float(f32) - 0.5) * 2.0;
+            for (sin_h) |*v| v.* = (rng.random().float(f32) - 0.5) * 2.0;
+            const rshape = [_]c_int{ @intCast(C), @intCast(half) };
+            const rr = RopeRows{ .cos = uploadF32(cos_h, &rshape), .sin = uploadF32(sin_h, &rshape) };
+            defer _ = mlx.mlx_array_free(rr.cos);
+            defer _ = mlx.mlx_array_free(rr.sin);
+
+            const exact_hits = dec_chain_hits;
+            const expected = try decChainRowsExactPerRow(&m, x, C, tc.H, tc.D, tc.rd, if (tc.rms) w else null, tc.post, tc.inv, &rr);
+            defer _ = mlx.mlx_array_free(expected);
+            try testing.expect(dec_chain_hits >= exact_hits + C); // direct one-row kernel calls
+            const multi_hits = dec_chain_hits;
+            const multi = (try decChainRowsKernel(&m, x, C, tc.H, tc.D, tc.rd, if (tc.rms) w else null, tc.post, tc.inv, &rr)) orelse {
+                std.debug.print("grid-z decode-chain DECLINED {s} C={d}\n", .{ tc.name, C });
+                try testing.expect(false);
+                unreachable;
+            };
+            defer _ = mlx.mlx_array_free(multi);
+            try testing.expect(dec_chain_hits > multi_hits); // promoted grid.z route engaged
+            const multi_shape = [_]c_int{ @intCast(C), @intCast(tc.H), @intCast(tc.D) };
+            try Ops.expectShape(multi, &multi_shape);
+            const flat_shape = [_]c_int{ @intCast(C), @intCast(tc.H * tc.D) };
+            try Ops.expectShape(expected, &flat_shape);
+            const multi_flat = try gpuReshape(multi, &flat_shape, s);
+            defer _ = mlx.mlx_array_free(multi_flat);
+            const expected_host = try toHostF32(alloc, expected, C * tc.H * tc.D, s);
+            defer alloc.free(expected_host);
+            const multi_host = try toHostF32(alloc, multi_flat, C * tc.H * tc.D, s);
+            defer alloc.free(multi_host);
+            try Ops.expectExact(tc.name, C, expected_host, multi_host);
+        }
+    }
+}
+
 test "dsv4: fused MoE gate+up kernel is no worse than the composed gathers (GPU)" {
     if (mlx.noGpuBackend()) return;
     const s = mlx.gpuStream();
@@ -10198,6 +11625,296 @@ test "dsv4: gs-128 expert pack resolves per-weight and qmm matches the dequant r
             for (0..K) |j| t += @as(f64, xh[j]) * dh[n * K + j];
             try testing.expect(std.math.isFinite(got[n]));
             try testing.expectApproxEqAbs(@as(f32, @floatCast(t)), got[n], 0.05);
+        }
+    }
+}
+
+test "dsv4: dense M1 matmul exactly matches individually evaluated rows" {
+    if (mlx.noGpuBackend()) return;
+    const s = mlx.gpuStream();
+    defer _ = mlx.mlx_stream_free(s);
+    const alloc = testing.allocator;
+    const K: usize = 256;
+    const N: usize = 64;
+    var rng = std.Random.DefaultPrng.init(69);
+
+    const wf = try alloc.alloc(f32, K * N);
+    defer alloc.free(wf);
+    for (wf) |*v| v.* = (rng.random().float(f32) - 0.5) * 0.8;
+    const wshape = [_]c_int{ @intCast(K), @intCast(N) };
+    const w = uploadF32(wf, &wshape);
+    defer _ = mlx.mlx_array_free(w);
+
+    for (2..7) |C| {
+        const xf = try alloc.alloc(f32, C * K);
+        defer alloc.free(xf);
+        for (xf) |*v| v.* = (rng.random().float(f32) - 0.5) * 2.0;
+        const xshape = [_]c_int{ @intCast(C), @intCast(K) };
+        const x = uploadF32(xf, &xshape);
+        defer _ = mlx.mlx_array_free(x);
+        const batched = try gpuMatmulBatchedM1(x, w, C, s);
+        defer _ = mlx.mlx_array_free(batched);
+        const batched_host = try toHostF32(alloc, batched, C * N, s);
+        defer alloc.free(batched_host);
+        for (0..C) |row_index| {
+            const row = try gpuSliceRC(x, row_index, row_index + 1, 0, K, s);
+            defer _ = mlx.mlx_array_free(row);
+            const serial = try gpuOp2(mlx.mlx_matmul, row, w, s);
+            defer _ = mlx.mlx_array_free(serial);
+            const serial_host = try toHostF32(alloc, serial, N, s);
+            defer alloc.free(serial_host);
+            try testing.expectEqualSlices(f32, serial_host, batched_host[row_index * N ..][0..N]);
+        }
+    }
+}
+
+test "dsv4: RMS M1 exactly matches individually evaluated rows" {
+    if (mlx.noGpuBackend()) return;
+    const s = mlx.gpuStream();
+    defer _ = mlx.mlx_stream_free(s);
+    const alloc = testing.allocator;
+    const width: usize = 256;
+    var rng = std.Random.DefaultPrng.init(83);
+
+    const wf = try alloc.alloc(f32, width);
+    defer alloc.free(wf);
+    for (wf) |*v| v.* = 0.25 + rng.random().float(f32);
+    const wshape = [_]c_int{@intCast(width)};
+    const w = uploadF32(wf, &wshape);
+    defer _ = mlx.mlx_array_free(w);
+
+    for (2..7) |C| {
+        const xf = try alloc.alloc(f32, C * width);
+        defer alloc.free(xf);
+        for (xf) |*v| v.* = (rng.random().float(f32) - 0.5) * 2.0;
+        const xshape = [_]c_int{ @intCast(C), @intCast(width) };
+        const x = uploadF32(xf, &xshape);
+        defer _ = mlx.mlx_array_free(x);
+        const batched = try gpuRmsRowsExact(x, w, C, width, 1e-6, s);
+        defer _ = mlx.mlx_array_free(batched);
+        const batched_host = try toHostF32(alloc, batched, C * width, s);
+        defer alloc.free(batched_host);
+        for (0..C) |row_index| {
+            const row = try gpuSliceRC(x, row_index, row_index + 1, 0, width, s);
+            defer _ = mlx.mlx_array_free(row);
+            const serial = try gpuRms(row, w, 1e-6, s);
+            defer _ = mlx.mlx_array_free(serial);
+            const serial_host = try toHostF32(alloc, serial, width, s);
+            defer alloc.free(serial_host);
+            try testing.expectEqualSlices(f32, serial_host, batched_host[row_index * width ..][0..width]);
+        }
+    }
+}
+
+test "dsv4: batched M1 qmm exactly matches individually evaluated rows" {
+    if (mlx.noGpuBackend()) return;
+    const s = mlx.gpuStream();
+    defer _ = mlx.mlx_stream_free(s);
+    const alloc = testing.allocator;
+    const K: usize = 256;
+    const N: usize = 64;
+    var rng = std.Random.DefaultPrng.init(71);
+
+    const wf = try alloc.alloc(f32, N * K);
+    defer alloc.free(wf);
+    for (wf) |*v| v.* = (rng.random().float(f32) - 0.5) * 0.8;
+    const wshape = [_]c_int{ @intCast(N), @intCast(K) };
+    const w32 = uploadF32(wf, &wshape);
+    defer _ = mlx.mlx_array_free(w32);
+    var wb = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(wb);
+    try mlx.check(mlx.mlx_astype(&wb, w32, .bfloat16, s));
+    var qv = mlx.mlx_vector_array_new();
+    defer _ = mlx.mlx_vector_array_free(qv);
+    const empty = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(empty);
+    try mlx.check(mlx.mlx_quantize(&qv, wb, mlx.mlx_optional_int.some(64), mlx.mlx_optional_int.some(8), "affine", empty, s));
+    var wq = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(wq);
+    try mlx.check(mlx.mlx_vector_array_get(&wq, qv, 0));
+    var sc = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(sc);
+    try mlx.check(mlx.mlx_vector_array_get(&sc, qv, 1));
+    var bs = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(bs);
+    try mlx.check(mlx.mlx_vector_array_get(&bs, qv, 2));
+    var cfg = model.ModelConfig{};
+    cfg.quant_bits = 8;
+    cfg.quant_group_size = 64;
+    cfg.quant_mode = .affine;
+    const q = Q{ .w = wq, .s = sc, .b = bs, .qp = transformer.computeQuantParams(&cfg, wq, sc, @intCast(K)) };
+
+    for (2..7) |C| {
+        const xf = try alloc.alloc(f32, C * K);
+        defer alloc.free(xf);
+        for (xf) |*v| v.* = (rng.random().float(f32) - 0.5) * 2.0;
+        const xshape = [_]c_int{ @intCast(C), @intCast(K) };
+        const x = uploadF32(xf, &xshape);
+        defer _ = mlx.mlx_array_free(x);
+        const native_f32_batched = try qmmNativeBatchedM1(x, q.w, q.s, q.b, q.qp.group_size, q.qp.bits, C, s);
+        defer _ = mlx.mlx_array_free(native_f32_batched);
+        const native_f32_host = try toHostF32(alloc, native_f32_batched, C * N, s);
+        defer alloc.free(native_f32_host);
+        var xb = mlx.mlx_array_new();
+        defer _ = mlx.mlx_array_free(xb);
+        try mlx.check(mlx.mlx_astype(&xb, x, .bfloat16, s));
+        const native_batched = try qmmBf16BatchedM1(&q, xb, C, s);
+        defer _ = mlx.mlx_array_free(native_batched);
+        const native_host = try toHostF32(alloc, native_batched, C * N, s);
+        defer alloc.free(native_host);
+        const batched = try gpuQmmBatchedM1(&q, x, C, s);
+        defer _ = mlx.mlx_array_free(batched);
+        const batched_host = try toHostF32(alloc, batched, C * N, s);
+        defer alloc.free(batched_host);
+        for (0..C) |row_index| {
+            const row = try gpuSliceRC(x, row_index, row_index + 1, 0, K, s);
+            defer _ = mlx.mlx_array_free(row);
+            const serial = try gpuQmmB(&q, row, s);
+            defer _ = mlx.mlx_array_free(serial);
+            const serial_host = try toHostF32(alloc, serial, N, s);
+            defer alloc.free(serial_host);
+            try testing.expectEqualSlices(f32, serial_host, batched_host[row_index * N ..][0..N]);
+            var native_f32_serial = mlx.mlx_array_new();
+            defer _ = mlx.mlx_array_free(native_f32_serial);
+            try mlx.check(mlx.mlx_quantized_matmul(&native_f32_serial, row, q.w, q.s, q.b, true, mlx.mlx_optional_int.some(@intCast(q.qp.group_size)), mlx.mlx_optional_int.some(@intCast(q.qp.bits)), "affine", s));
+            const native_f32_serial_host = try toHostF32(alloc, native_f32_serial, N, s);
+            defer alloc.free(native_f32_serial_host);
+            try testing.expectEqualSlices(f32, native_f32_serial_host, native_f32_host[row_index * N ..][0..N]);
+            const native_row = try gpuSliceRC(xb, row_index, row_index + 1, 0, K, s);
+            defer _ = mlx.mlx_array_free(native_row);
+            const native_serial = try qmmBf16(&q, native_row, s);
+            defer _ = mlx.mlx_array_free(native_serial);
+            const native_serial_host = try toHostF32(alloc, native_serial, N, s);
+            defer alloc.free(native_serial_host);
+            try testing.expectEqualSlices(f32, native_serial_host, native_host[row_index * N ..][0..N]);
+        }
+    }
+}
+
+test "dsv4: grouped wo_a M1 qmm exactly matches individually evaluated rows" {
+    if (mlx.noGpuBackend()) return;
+    const s = mlx.gpuStream();
+    defer _ = mlx.mlx_stream_free(s);
+    const alloc = testing.allocator;
+    const og: usize = 4;
+    const ol: usize = 8;
+    const gin: usize = 256;
+    var rng = std.Random.DefaultPrng.init(73);
+
+    const wf = try alloc.alloc(f32, og * ol * gin);
+    defer alloc.free(wf);
+    for (wf) |*v| v.* = (rng.random().float(f32) - 0.5) * 0.8;
+    const wshape = [_]c_int{ @intCast(og * ol), @intCast(gin) };
+    const w32 = uploadF32(wf, &wshape);
+    defer _ = mlx.mlx_array_free(w32);
+    var wb = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(wb);
+    try mlx.check(mlx.mlx_astype(&wb, w32, .bfloat16, s));
+    var qv = mlx.mlx_vector_array_new();
+    defer _ = mlx.mlx_vector_array_free(qv);
+    const empty = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(empty);
+    try mlx.check(mlx.mlx_quantize(&qv, wb, mlx.mlx_optional_int.some(64), mlx.mlx_optional_int.some(8), "affine", empty, s));
+    var wq = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(wq);
+    try mlx.check(mlx.mlx_vector_array_get(&wq, qv, 0));
+    var sc = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(sc);
+    try mlx.check(mlx.mlx_vector_array_get(&sc, qv, 1));
+    var bs = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(bs);
+    try mlx.check(mlx.mlx_vector_array_get(&bs, qv, 2));
+    var cfg = model.ModelConfig{};
+    cfg.quant_bits = 8;
+    cfg.quant_group_size = 64;
+    cfg.quant_mode = .affine;
+    const q = Q{ .w = wq, .s = sc, .b = bs, .qp = transformer.computeQuantParams(&cfg, wq, sc, @intCast(gin)) };
+    const q3 = Q3{
+        .w = try reshapeQ3(wq, @intCast(og), @intCast(ol), s),
+        .s = try reshapeQ3(sc, @intCast(og), @intCast(ol), s),
+        .b = try reshapeQ3(bs, @intCast(og), @intCast(ol), s),
+    };
+    defer _ = mlx.mlx_array_free(q3.w);
+    defer _ = mlx.mlx_array_free(q3.s);
+    defer _ = mlx.mlx_array_free(q3.b);
+
+    for (2..7) |C| {
+        const xf = try alloc.alloc(f32, og * C * gin);
+        defer alloc.free(xf);
+        for (xf) |*v| v.* = (rng.random().float(f32) - 0.5) * 2.0;
+        const xshape = [_]c_int{ @intCast(og), @intCast(C), @intCast(gin) };
+        const x = uploadF32(xf, &xshape);
+        defer _ = mlx.mlx_array_free(x);
+        var xb = mlx.mlx_array_new();
+        defer _ = mlx.mlx_array_free(xb);
+        try mlx.check(mlx.mlx_astype(&xb, x, .bfloat16, s));
+        const batched = try gpuGroupedQmmBatchedM1(&q3, &q.qp, xb, C, s);
+        defer _ = mlx.mlx_array_free(batched);
+        const batched_host = try toHostF32(alloc, batched, og * C * ol, s);
+        defer alloc.free(batched_host);
+        for (0..C) |row_index| {
+            const start = [_]c_int{ 0, @intCast(row_index), 0 };
+            const stop = [_]c_int{ @intCast(og), @intCast(row_index + 1), @intCast(gin) };
+            const strides = [_]c_int{ 1, 1, 1 };
+            var row = mlx.mlx_array_new();
+            defer _ = mlx.mlx_array_free(row);
+            try mlx.check(mlx.mlx_slice(&row, xb, &start, 3, &stop, 3, &strides, 3, s));
+            var serial = mlx.mlx_array_new();
+            defer _ = mlx.mlx_array_free(serial);
+            try mlx.check(mlx.mlx_quantized_matmul(&serial, row, q3.w, q3.s, q3.b, true, mlx.mlx_optional_int.some(@intCast(q.qp.group_size)), mlx.mlx_optional_int.some(@intCast(q.qp.bits)), "affine", s));
+            const serial_host = try toHostF32(alloc, serial, og * ol, s);
+            defer alloc.free(serial_host);
+            for (0..og) |group_index| {
+                const off = (group_index * C + row_index) * ol;
+                try testing.expectEqualSlices(f32, serial_host[group_index * ol ..][0..ol], batched_host[off .. off + ol]);
+            }
+        }
+    }
+}
+
+test "dsv4: grouped dense wo_a M1 matmul exactly matches individually evaluated rows" {
+    if (mlx.noGpuBackend()) return;
+    const s = mlx.gpuStream();
+    defer _ = mlx.mlx_stream_free(s);
+    const alloc = testing.allocator;
+    const og: usize = 4;
+    const ol: usize = 8;
+    const gin: usize = 256;
+    var rng = std.Random.DefaultPrng.init(79);
+
+    const wf = try alloc.alloc(f32, og * gin * ol);
+    defer alloc.free(wf);
+    for (wf) |*v| v.* = (rng.random().float(f32) - 0.5) * 0.8;
+    const wshape = [_]c_int{ @intCast(og), @intCast(gin), @intCast(ol) };
+    const w = uploadF32(wf, &wshape);
+    defer _ = mlx.mlx_array_free(w);
+
+    for (2..7) |C| {
+        const xf = try alloc.alloc(f32, og * C * gin);
+        defer alloc.free(xf);
+        for (xf) |*v| v.* = (rng.random().float(f32) - 0.5) * 2.0;
+        const xshape = [_]c_int{ @intCast(og), @intCast(C), @intCast(gin) };
+        const x = uploadF32(xf, &xshape);
+        defer _ = mlx.mlx_array_free(x);
+        const batched = try gpuGroupedMatmulBatchedM1(x, w, C, s);
+        defer _ = mlx.mlx_array_free(batched);
+        const batched_host = try toHostF32(alloc, batched, og * C * ol, s);
+        defer alloc.free(batched_host);
+        for (0..C) |row_index| {
+            const start = [_]c_int{ 0, @intCast(row_index), 0 };
+            const stop = [_]c_int{ @intCast(og), @intCast(row_index + 1), @intCast(gin) };
+            const strides = [_]c_int{ 1, 1, 1 };
+            var row = mlx.mlx_array_new();
+            defer _ = mlx.mlx_array_free(row);
+            try mlx.check(mlx.mlx_slice(&row, x, &start, 3, &stop, 3, &strides, 3, s));
+            const serial = try gpuOp2(mlx.mlx_matmul, row, w, s);
+            defer _ = mlx.mlx_array_free(serial);
+            const serial_host = try toHostF32(alloc, serial, og * ol, s);
+            defer alloc.free(serial_host);
+            for (0..og) |group_index| {
+                const off = (group_index * C + row_index) * ol;
+                try testing.expectEqualSlices(f32, serial_host[group_index * ol ..][0..ol], batched_host[off..][0..ol]);
+            }
         }
     }
 }
@@ -10441,6 +12158,9 @@ test "dsv4: comp_in decode requant rides --decode-attn-quant (DSV4_MINI)" {
 test "dsv4: serial-equivalence lanes for unquantized DSpark (env-gated)" {
     const model_z = std.c.getenv("DSV4_SERIAL_MODEL") orelse return;
     const ids_z = std.c.getenv("DSV4_SERIAL_IDS") orelse return;
+    try testing.expect(std.c.getenv("MLX_SERVE_DSPARK_SERIAL_VERIFY") == null);
+    try testing.expect(std.c.getenv("MLX_SERVE_DSV4_DEC_CHAIN") == null);
+    decChainSetForTest(null);
     if (mlx.noGpuBackend()) return;
     const allocator = testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -10498,7 +12218,7 @@ test "dsv4: serial-equivalence lanes for unquantized DSpark (env-gated)" {
             const same_top = argmax(a) == argmax(b);
             const same_hash = digest(a) == digest(b);
             std.debug.print("[serial-eq] {s}: top={} hash={} max_abs={e}\n", .{ label, same_top, same_hash, max_abs });
-            return same_top and max_abs <= 1e-4;
+            return same_top and same_hash and max_abs == 0;
         }
     };
     const Prepared = struct {
@@ -10640,6 +12360,9 @@ test "dsv4: serial-equivalence lanes for unquantized DSpark (env-gated)" {
 test "dsv4: batched verification differential B1-B5 (env-gated)" {
     const model_z = std.c.getenv("DSV4_SERIAL_MODEL") orelse return;
     const ids_z = std.c.getenv("DSV4_SERIAL_IDS") orelse return;
+    try testing.expect(std.c.getenv("MLX_SERVE_DSPARK_SERIAL_VERIFY") == null);
+    try testing.expect(std.c.getenv("MLX_SERVE_DSV4_DEC_CHAIN") == null);
+    decChainSetForTest(null);
     if (mlx.noGpuBackend()) return;
     const allocator = testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -10730,8 +12453,14 @@ test "dsv4: batched verification differential B1-B5 (env-gated)" {
         }
     };
 
+    const max_b = blk: {
+        const raw = std.c.getenv("MLX_SERVE_DSV4_DIFFERENTIAL_MAX_B") orelse break :blk 5;
+        const requested = std.fmt.parseInt(usize, std.mem.span(raw), 10) catch break :blk 5;
+        break :blk @min(@max(requested, 1), 5);
+    };
+    if (max_b != 5) std.debug.print("[batch-diff] test-only maximum B={d}\n", .{max_b});
     var all_ok = true;
-    for (1..6) |b| {
+    for (1..max_b + 1) |b| {
         var draft_state = try initDecodeState(&mdl, allocator);
         defer deinitDecodeState(&draft_state);
         const draft_prefill = try prefillIntoState(&mdl, allocator, &draft_state, prompt.items);
@@ -10755,14 +12484,17 @@ test "dsv4: batched verification differential B1-B5 (env-gated)" {
         defer allocator.free(serial_logits);
         var serial_capture = DifferentialCapture{ .allocator = allocator };
         defer serial_capture.deinit();
-        differential_capture = &serial_capture;
-        for (verify[0 .. b + 1], 0..) |token, row| {
-            serial_capture.current_call = row;
-            const logits = try decodeStep(&mdl, allocator, &serial_state, token);
-            @memcpy(serial_logits[row * mdl.vocab ..][0..mdl.vocab], logits);
-            allocator.free(logits);
+        {
+            std.debug.assert(differential_capture == null);
+            differential_capture = &serial_capture;
+            defer differential_capture = null;
+            for (verify[0 .. b + 1], 0..) |token, row| {
+                serial_capture.current_call = row;
+                const logits = try decodeStep(&mdl, allocator, &serial_state, token);
+                @memcpy(serial_logits[row * mdl.vocab ..][0..mdl.vocab], logits);
+                allocator.free(logits);
+            }
         }
-        differential_capture = null;
 
         var batch_state = try initDecodeState(&mdl, allocator);
         defer deinitDecodeState(&batch_state);
@@ -10770,14 +12502,48 @@ test "dsv4: batched verification differential B1-B5 (env-gated)" {
         allocator.free(batch_prefill);
         var batch_capture = DifferentialCapture{ .allocator = allocator };
         defer batch_capture.deinit();
-        differential_capture = &batch_capture;
-        const batch_logits = try extendStateAllLogits(&mdl, allocator, &batch_state, verify[0 .. b + 1]);
-        differential_capture = null;
+        const batch_logits = blk: {
+            std.debug.assert(differential_capture == null);
+            differential_capture = &batch_capture;
+            defer differential_capture = null;
+            break :blk try extendStateAllLogits(&mdl, allocator, &batch_state, verify[0 .. b + 1]);
+        };
         defer allocator.free(batch_logits);
+
+        // The candidate that DSpark submits in normal operation is all-GPU
+        // and lazy. Capture deliberately forces many intermediate evaluates,
+        // so run the same exact path again with capture off before judging it.
+        var uncaptured_state = try initDecodeState(&mdl, allocator);
+        defer deinitDecodeState(&uncaptured_state);
+        const uncaptured_prefill = try prefillIntoState(&mdl, allocator, &uncaptured_state, prompt.items);
+        allocator.free(uncaptured_prefill);
+        std.debug.assert(differential_capture == null);
+        const uncaptured_logits_g = try extendChunk(&mdl, allocator, &uncaptured_state, verify[0 .. b + 1], .all_gpu, null);
+        defer _ = mlx.mlx_array_free(uncaptured_logits_g);
+        const uncaptured_logits = try toHostF32(allocator, uncaptured_logits_g, (b + 1) * mdl.vocab, mdl.s);
+        defer allocator.free(uncaptured_logits);
+
         const serial_fp = fingerprintDecodeState(&serial_state);
         const batch_fp = fingerprintDecodeState(&batch_state);
-        const fp_equal = std.meta.eql(serial_fp, batch_fp);
-        if (!fp_equal) all_ok = false;
+        const uncaptured_fp = fingerprintDecodeState(&uncaptured_state);
+        const fp_equal = std.meta.eql(serial_fp, batch_fp) and std.meta.eql(serial_fp, uncaptured_fp);
+        const serial_state_hash = try hashDecodeStateContent(&mdl, &serial_state, allocator);
+        const batch_state_hash = try hashDecodeStateContent(&mdl, &batch_state, allocator);
+        const uncaptured_state_hash = try hashDecodeStateContent(&mdl, &uncaptured_state, allocator);
+        const state_content_equal = serial_state_hash == batch_state_hash and serial_state_hash == uncaptured_state_hash;
+        if (!fp_equal or !state_content_equal) all_ok = false;
+        if (!state_content_equal) {
+            const serial_batch_content_equal = try reportFirstStateContentDifference(&mdl, &serial_state, &batch_state, allocator);
+            if (serial_batch_content_equal)
+                std.debug.print("[batch-state] serial/batch structured witness matched despite aggregate hash mismatch\n", .{});
+            const batch_uncaptured_content_equal = try reportFirstStateContentDifference(&mdl, &batch_state, &uncaptured_state, allocator);
+            if (!batch_uncaptured_content_equal)
+                std.debug.print("[batch-state] captured/lazy states differ despite their aggregate hash comparison\n", .{});
+        }
+        if (serial_capture.records.items.len != batch_capture.records.items.len) {
+            std.debug.print("[batch-stage] record count mismatch B={d}: serial={d} batch={d}\n", .{ b, serial_capture.records.items.len, batch_capture.records.items.len });
+            all_ok = false;
+        }
         for (serial_capture.records.items) |serial_record| {
             var match: ?*const DifferentialRecord = null;
             const logical_row = serial_record.call + serial_record.row;
@@ -10797,8 +12563,40 @@ test "dsv4: batched verification differential B1-B5 (env-gated)" {
             }
             var stage_max_abs: f32 = 0;
             for (serial_record.values, match.?.values) |a, c| stage_max_abs = @max(stage_max_abs, @abs(a - c));
-            if (stage_max_abs > 1e-4) {
-                std.debug.print("[batch-stage] first diff B={d} row={d} layer={d} stage={s} max_abs={e}\n", .{ b, logical_row, serial_record.layer, @tagName(serial_record.stage), stage_max_abs });
+            if (b == 1 and logical_row == 0 and (serial_record.layer == 0 or serial_record.layer == 2 or serial_record.layer == mdl.n_layers) and switch (serial_record.stage) {
+                .attention_hc_pre_y,
+                .attention_hc_pack,
+                .attention_hc_post_coeff,
+                .attention_hc_residual_coeff,
+                .query_a_projection,
+                .query_a_norm,
+                .query_projection,
+                .query_norm,
+                .query,
+                .index_query_projection,
+                .index_query,
+                .key_value,
+                .compressor_input,
+                .attention_value_mix,
+                .attention_inverse_rope,
+                .attention_output_input,
+                .attention_output_a,
+                .attention_output_b,
+                .moe_gate_scores,
+                .moe_routed_down,
+                .moe_routed,
+                .moe_shared,
+                .moe_output,
+                .head_mix,
+                .head_collapse,
+                .head_norm,
+                => true,
+                else => false,
+            }) {
+                std.debug.print("[batch-detail-stage] B=1 row=0 layer={d} stage={s} max_abs={e}\n", .{ serial_record.layer, @tagName(serial_record.stage), stage_max_abs });
+            }
+            if (stage_max_abs > 0) {
+                std.debug.print("[batch-stage] first nonzero B={d} row={d} layer={d} stage={s} max_abs={e}\n", .{ b, logical_row, serial_record.layer, @tagName(serial_record.stage), stage_max_abs });
                 all_ok = false;
                 break;
             }
@@ -10806,24 +12604,56 @@ test "dsv4: batched verification differential B1-B5 (env-gated)" {
         for (0..(b + 1)) |row| {
             const serial_row = serial_logits[row * mdl.vocab ..][0..mdl.vocab];
             const batch_row = batch_logits[row * mdl.vocab ..][0..mdl.vocab];
+            const uncaptured_row = uncaptured_logits[row * mdl.vocab ..][0..mdl.vocab];
             var max_abs: f32 = 0;
+            var uncaptured_max_abs: f32 = 0;
             var mean_abs: f64 = 0;
-            for (serial_row, batch_row) |a, c| {
+            for (serial_row, batch_row, uncaptured_row) |a, c, u| {
                 const delta = @abs(a - c);
                 max_abs = @max(max_abs, delta);
                 mean_abs += delta;
+                uncaptured_max_abs = @max(uncaptured_max_abs, @abs(a - u));
             }
             mean_abs /= @as(f64, @floatFromInt(mdl.vocab));
             const serial_top = Ops.topFive(serial_row);
             const batch_top = Ops.topFive(batch_row);
+            const uncaptured_top = Ops.topFive(uncaptured_row);
             const same_top = serial_top[0] == batch_top[0];
             const same_hash = Ops.hash(serial_row) == Ops.hash(batch_row);
-            std.debug.print("[batch-diff] B={d} row={d} top={} hash={} max_abs={e} mean_abs={e} kl={e} serial_top={any} batch_top={any}\n", .{
-                b, row, same_top, same_hash, max_abs, mean_abs, Ops.kl(serial_row, batch_row), serial_top, batch_top,
+            const uncaptured_same_top = serial_top[0] == uncaptured_top[0];
+            const uncaptured_same_hash = Ops.hash(serial_row) == Ops.hash(uncaptured_row);
+            std.debug.print("[batch-diff] B={d} row={d} capture_top={} capture_hash={} capture_max_abs={e} capture_mean_abs={e} capture_kl={e} lazy_top={} lazy_hash={} lazy_max_abs={e} serial_top={any} batch_top={any} lazy_top5={any}\n", .{
+                b,
+                row,
+                same_top,
+                same_hash,
+                max_abs,
+                mean_abs,
+                Ops.kl(serial_row, batch_row),
+                uncaptured_same_top,
+                uncaptured_same_hash,
+                uncaptured_max_abs,
+                serial_top,
+                batch_top,
+                uncaptured_top,
             });
-            if (!same_top or max_abs > 1e-4) all_ok = false;
+            if (!same_top or !same_hash or max_abs != 0 or
+                !uncaptured_same_top or !uncaptured_same_hash or uncaptured_max_abs != 0)
+            {
+                all_ok = false;
+            }
         }
-        std.debug.print("[batch-diff] B={d} state_equal={} serial_n={d} batch_n={d}\n", .{ b, fp_equal, serial_fp.n, batch_fp.n });
+        std.debug.print("[batch-diff] B={d} state_fingerprint_equal={} state_content_equal={} serial_n={d} batch_n={d} lazy_n={d} state_hashes={d}/{d}/{d}\n", .{
+            b,
+            fp_equal,
+            state_content_equal,
+            serial_fp.n,
+            batch_fp.n,
+            uncaptured_fp.n,
+            serial_state_hash,
+            batch_state_hash,
+            uncaptured_state_hash,
+        });
     }
     try testing.expect(all_ok);
 }
