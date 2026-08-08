@@ -4751,6 +4751,50 @@ pub fn fingerprintDecodeState(st: *const Dsv4DecodeState) Dsv4StateFingerprint {
     };
 }
 
+const DifferentialStage = enum(u8) { attention, moe };
+
+const DifferentialRecord = struct {
+    call: usize,
+    row: usize,
+    layer: usize,
+    stage: DifferentialStage,
+    values: []f32,
+};
+
+const DifferentialCapture = struct {
+    allocator: std.mem.Allocator,
+    current_call: usize = 0,
+    records: std.ArrayList(DifferentialRecord) = .empty,
+
+    fn deinit(self: *DifferentialCapture) void {
+        for (self.records.items) |record| self.allocator.free(record.values);
+        self.records.deinit(self.allocator);
+    }
+
+    fn capture(self: *DifferentialCapture, m: *const Dsv4Model, arr: mlx.mlx_array, layer: usize, stage: DifferentialStage, rows: usize) !void {
+        const count = mlx.mlx_array_size(arr);
+        const row_width = count / rows;
+        const host = try toHostF32(self.allocator, arr, count, m.s);
+        defer self.allocator.free(host);
+        for (0..rows) |row| {
+            const values = try self.allocator.dupe(f32, host[row * row_width ..][0..row_width]);
+            try self.records.append(self.allocator, .{
+                .call = self.current_call,
+                .row = row,
+                .layer = layer,
+                .stage = stage,
+                .values = values,
+            });
+        }
+    }
+};
+
+var differential_capture: ?*DifferentialCapture = null;
+
+fn captureDifferentialStage(m: *const Dsv4Model, arr: mlx.mlx_array, layer: usize, stage: DifferentialStage, rows: usize) !void {
+    if (differential_capture) |capture| try capture.capture(m, arr, layer, stage, rows);
+}
+
 fn snapshotCompDec(alloc: std.mem.Allocator, cs: *const CompDecState) !CompDecSnapshot {
     const kvp = try alloc.dupe(f32, cs.kv_pend);
     errdefer alloc.free(kvp);
@@ -6015,6 +6059,7 @@ fn decodeLayers(m: *Dsv4Model, a: std.mem.Allocator, st: *Dsv4DecodeState, strea
             const attn_out = try attentionDecodeGpu(m, a, st, li, x, pos, rr, fr, deferred);
             defer _ = mlx.mlx_array_free(attn_out);
             const ns = try hcPostGpu(m, stream_g, attn_out, &pre);
+            try captureDifferentialStage(m, ns, li, .attention, 1);
             _ = mlx.mlx_array_free(stream_g);
             stream_g = ns;
         }
@@ -6026,6 +6071,7 @@ fn decodeLayers(m: *Dsv4Model, a: std.mem.Allocator, st: *Dsv4DecodeState, strea
             const ffn_out = if (id_arr) |ia| try moeGpuLazy(m, a, li, x, ia, trace_call) else try moeDecodeGpu(m, a, li, x, id, trace_call);
             defer _ = mlx.mlx_array_free(ffn_out);
             const ns = try hcPostGpu(m, stream_g, ffn_out, &pre);
+            try captureDifferentialStage(m, ns, li, .moe, 1);
             _ = mlx.mlx_array_free(stream_g);
             stream_g = ns;
         }
@@ -8306,6 +8352,7 @@ fn extendChunk(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, ids:
             const attn_out = try attentionBatch(m, a, st, li, x, C, base, rr, fr, &deferred);
             defer _ = mlx.mlx_array_free(attn_out);
             const ns = try hcPostBatch(m, stream_g, attn_out, C, &pre);
+            try captureDifferentialStage(m, ns, li, .attention, C);
             _ = mlx.mlx_array_free(stream_g);
             stream_g = ns;
         }
@@ -8317,6 +8364,7 @@ fn extendChunk(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, ids:
             const ffn_out = try moeGpu(m, a, li, x, ids, trace_call);
             defer _ = mlx.mlx_array_free(ffn_out);
             const ns = try hcPostBatch(m, stream_g, ffn_out, C, &pre);
+            try captureDifferentialStage(m, ns, li, .moe, C);
             _ = mlx.mlx_array_free(stream_g);
             stream_g = ns;
         }
@@ -10578,4 +10626,195 @@ test "dsv4: serial-equivalence lanes for unquantized DSpark (env-gated)" {
     }
 
     try testing.expect(ok);
+}
+
+test "dsv4: batched verification differential B1-B5 (env-gated)" {
+    const model_z = std.c.getenv("DSV4_SERIAL_MODEL") orelse return;
+    const ids_z = std.c.getenv("DSV4_SERIAL_IDS") orelse return;
+    if (mlx.noGpuBackend()) return;
+    const allocator = testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const path = std.mem.span(model_z);
+    const readAll = struct {
+        fn f(io_: std.Io, alloc: std.mem.Allocator, p: []const u8) ![]u8 {
+            const file = try std.Io.Dir.openFileAbsolute(io_, p, .{});
+            defer file.close(io_);
+            var rb: [8192]u8 = undefined;
+            var rs = file.reader(io_, &rb);
+            return rs.interface.allocRemaining(alloc, .limited(1 << 20));
+        }
+    }.f;
+    const cfg_path = try std.fmt.allocPrint(allocator, "{s}/config.json", .{path});
+    defer allocator.free(cfg_path);
+    const cfg_json = try readAll(io, allocator, cfg_path);
+    defer allocator.free(cfg_json);
+    const cfg = try model.parseConfigFromJson(allocator, cfg_json);
+    var weights = try model.loadWeights(io, allocator, path);
+    defer weights.deinit();
+    const dw = try loadDsv4Weights(allocator, &cfg, &weights);
+    const stream = mlx.gpuStream();
+    defer _ = mlx.mlx_stream_free(stream);
+    var mdl = try initModel(allocator, &cfg, dw, stream);
+    defer mdl.deinit();
+
+    var prompt = std.ArrayList(u32).empty;
+    defer prompt.deinit(allocator);
+    var ids_it = std.mem.splitScalar(u8, std.mem.span(ids_z), ',');
+    while (ids_it.next()) |raw| {
+        if (raw.len > 0) try prompt.append(allocator, try std.fmt.parseInt(u32, raw, 10));
+    }
+    try testing.expect(prompt.items.len > 1);
+
+    const Ops = struct {
+        fn argmax(values: []const f32) u32 {
+            var best: usize = 0;
+            for (values, 0..) |value, i| {
+                if (value > values[best]) best = i;
+            }
+            return @intCast(best);
+        }
+
+        fn topFive(values: []const f32) [5]u32 {
+            var result: [5]u32 = @splat(0);
+            for (0..5) |rank| {
+                var best: usize = 0;
+                var found = false;
+                for (values, 0..) |value, i| {
+                    var used = false;
+                    for (result[0..rank]) |previous| {
+                        if (previous == i) used = true;
+                    }
+                    if (!used and (!found or value > values[best])) {
+                        best = i;
+                        found = true;
+                    }
+                }
+                result[rank] = @intCast(best);
+            }
+            return result;
+        }
+
+        fn hash(values: []const f32) u64 {
+            return std.hash.Wyhash.hash(0, std.mem.sliceAsBytes(values));
+        }
+
+        fn kl(a: []const f32, b: []const f32) f64 {
+            var ma: f64 = -std.math.inf(f64);
+            var mb: f64 = -std.math.inf(f64);
+            for (a, b) |av, bv| {
+                ma = @max(ma, av);
+                mb = @max(mb, bv);
+            }
+            var sa: f64 = 0;
+            var sb: f64 = 0;
+            for (a, b) |av, bv| {
+                sa += @exp(@as(f64, av) - ma);
+                sb += @exp(@as(f64, bv) - mb);
+            }
+            var out: f64 = 0;
+            for (a, b) |av, bv| {
+                const pa = @exp(@as(f64, av) - ma) / sa;
+                const pb = @exp(@as(f64, bv) - mb) / sb;
+                out += pa * @log(pa / pb);
+            }
+            return out;
+        }
+    };
+
+    var all_ok = true;
+    for (1..6) |b| {
+        var draft_state = try initDecodeState(&mdl, allocator);
+        defer deinitDecodeState(&draft_state);
+        const draft_prefill = try prefillIntoState(&mdl, allocator, &draft_state, prompt.items);
+        const t1 = Ops.argmax(draft_prefill);
+        allocator.free(draft_prefill);
+        var verify: [16]u32 = undefined;
+        verify[0] = t1;
+        var next = t1;
+        for (1..(b + 1)) |i| {
+            const logits = try decodeStep(&mdl, allocator, &draft_state, next);
+            next = Ops.argmax(logits);
+            verify[i] = next;
+            allocator.free(logits);
+        }
+
+        var serial_state = try initDecodeState(&mdl, allocator);
+        defer deinitDecodeState(&serial_state);
+        const serial_prefill = try prefillIntoState(&mdl, allocator, &serial_state, prompt.items);
+        allocator.free(serial_prefill);
+        const serial_logits = try allocator.alloc(f32, (b + 1) * mdl.vocab);
+        defer allocator.free(serial_logits);
+        var serial_capture = DifferentialCapture{ .allocator = allocator };
+        defer serial_capture.deinit();
+        differential_capture = &serial_capture;
+        for (verify[0 .. b + 1], 0..) |token, row| {
+            serial_capture.current_call = row;
+            const logits = try decodeStep(&mdl, allocator, &serial_state, token);
+            @memcpy(serial_logits[row * mdl.vocab ..][0..mdl.vocab], logits);
+            allocator.free(logits);
+        }
+        differential_capture = null;
+
+        var batch_state = try initDecodeState(&mdl, allocator);
+        defer deinitDecodeState(&batch_state);
+        const batch_prefill = try prefillIntoState(&mdl, allocator, &batch_state, prompt.items);
+        allocator.free(batch_prefill);
+        var batch_capture = DifferentialCapture{ .allocator = allocator };
+        defer batch_capture.deinit();
+        differential_capture = &batch_capture;
+        const batch_logits = try extendStateAllLogits(&mdl, allocator, &batch_state, verify[0 .. b + 1]);
+        differential_capture = null;
+        defer allocator.free(batch_logits);
+        const serial_fp = fingerprintDecodeState(&serial_state);
+        const batch_fp = fingerprintDecodeState(&batch_state);
+        const fp_equal = std.meta.eql(serial_fp, batch_fp);
+        if (!fp_equal) all_ok = false;
+        for (serial_capture.records.items) |serial_record| {
+            var match: ?*const DifferentialRecord = null;
+            const logical_row = serial_record.call + serial_record.row;
+            for (batch_capture.records.items) |*batch_record| {
+                if (batch_record.call + batch_record.row == logical_row and
+                    batch_record.layer == serial_record.layer and
+                    batch_record.stage == serial_record.stage)
+                {
+                    match = batch_record;
+                    break;
+                }
+            }
+            if (match == null) {
+                std.debug.print("[batch-stage] missing B={d} row={d} layer={d} stage={s}\n", .{ b, logical_row, serial_record.layer, @tagName(serial_record.stage) });
+                all_ok = false;
+                continue;
+            }
+            var stage_max_abs: f32 = 0;
+            for (serial_record.values, match.?.values) |a, c| stage_max_abs = @max(stage_max_abs, @abs(a - c));
+            if (stage_max_abs > 1e-4) {
+                std.debug.print("[batch-stage] first diff B={d} row={d} layer={d} stage={s} max_abs={e}\n", .{ b, logical_row, serial_record.layer, @tagName(serial_record.stage), stage_max_abs });
+                all_ok = false;
+                break;
+            }
+        }
+        for (0..(b + 1)) |row| {
+            const serial_row = serial_logits[row * mdl.vocab ..][0..mdl.vocab];
+            const batch_row = batch_logits[row * mdl.vocab ..][0..mdl.vocab];
+            var max_abs: f32 = 0;
+            var mean_abs: f64 = 0;
+            for (serial_row, batch_row) |a, c| {
+                const delta = @abs(a - c);
+                max_abs = @max(max_abs, delta);
+                mean_abs += delta;
+            }
+            mean_abs /= @as(f64, @floatFromInt(mdl.vocab));
+            const serial_top = Ops.topFive(serial_row);
+            const batch_top = Ops.topFive(batch_row);
+            const same_top = serial_top[0] == batch_top[0];
+            const same_hash = Ops.hash(serial_row) == Ops.hash(batch_row);
+            std.debug.print("[batch-diff] B={d} row={d} top={} hash={} max_abs={e} mean_abs={e} kl={e} serial_top={any} batch_top={any}\n", .{
+                b, row, same_top, same_hash, max_abs, mean_abs, Ops.kl(serial_row, batch_row), serial_top, batch_top,
+            });
+            if (!same_top or max_abs > 1e-4) all_ok = false;
+        }
+        std.debug.print("[batch-diff] B={d} state_equal={} serial_n={d} batch_n={d}\n", .{ b, fp_equal, serial_fp.n, batch_fp.n });
+    }
+    try testing.expect(all_ok);
 }
