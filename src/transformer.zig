@@ -1,5 +1,6 @@
 const std = @import("std");
 const dsv4_mod = @import("deepseek_v4.zig");
+const router_trace_mod = @import("router_trace.zig");
 const mlx = @import("mlx.zig");
 const mrope = @import("mrope.zig");
 const kv_quant = @import("kv_quant.zig");
@@ -3836,6 +3837,12 @@ pub const ForwardCtx = struct {
     moe_seq_offset: *usize,
     ssm_entries: ?[]SSMCacheEntry,
     capture_hidden: ?*mlx.mlx_array,
+    /// Per-request native dsv4 router trace sink (nullable). When non-null,
+    /// the DeepSeek routing layer appends its expert selections here; owned by
+    /// the scheduler `Slot`, never by this struct. Null for non-dsv4 requests,
+    /// embedded-engine requests, and requests to a server started without
+    /// `--router-trace`.
+    router_trace: ?*router_trace_mod.RouterTraceSink = null,
     /// Like `capture_hidden` but receives the FULL post-final-norm hidden
     /// `[B, L, H]` (all positions, refcount-shared) instead of the last
     /// position only. Used by the Qwen MTP head, whose committed-history

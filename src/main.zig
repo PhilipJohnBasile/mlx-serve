@@ -49,6 +49,11 @@ var ds4_mtp: bool = true;
 // auto-found support GGUF carries DSpark stages (the same flag opts the
 // native dsv4 engine into its draft stages via MLX_SERVE_DSV4_DSPARK).
 var ds4_dspark: bool = false;
+/// `--router-trace <dir>`: native dsv4 per-request router-trace output
+/// directory. Empty disables tracing. Module-level (borrowed from argv) and
+/// threaded into every serve-path `LoadParams` so on-demand loads honor it
+/// like the other launch flags.
+var router_trace_dir: []const u8 = "";
 
 /// `mlx-serve run` REPL thread: chats against the in-process server over
 /// its own Ollama /api/chat endpoint, then brings the server down cleanly
@@ -255,6 +260,12 @@ fn printUsage(io: std.Io) void {
         \\                        (speculative decode). On by default when the
         \\                        model dir ships one; auto-off under
         \\                        --ssd-streaming (ds4 refuses the combination).
+        \\  --router-trace <dir>
+        \\                      Native DeepSeek-V4-Flash only: write a binary
+        \\                        expert-routing trace per request to <dir>
+        \\                        (`<dir>/<seq>.bin` + `<seq>.json`). Research
+        \\                        tool for expert-residency modeling; timing
+        \\                        under tracing is not performance evidence.
         \\  --model-dir <dir>   Directory of MLX models to discover at startup.
         \\                        Discovered siblings appear in /v1/models and
         \\                        can be loaded on-demand via /v1/load-model
@@ -575,6 +586,11 @@ pub fn main(init: std.process.Init) !void {
             // Same flag, embedded engine: arm ds4's DSpark runtime when a
             // DSpark support GGUF sits beside a served .gguf model.
             ds4_dspark = true;
+        } else if (std.mem.eql(u8, args[i], "--router-trace") and i + 1 < args.len) {
+            i += 1;
+            // Borrowed from argv, like --api-key. The path must exist at
+            // flush time (Slot.deinit); we don't create it eagerly.
+            if (args[i].len > 0) router_trace_dir = args[i];
         } else if (std.mem.eql(u8, args[i], "--decode-attn-quant")) {
             transformer_mod.decode_attn_quant_flag = true;
         } else if (std.mem.eql(u8, args[i], "--no-decode-attn-quant")) {
@@ -1193,6 +1209,7 @@ pub fn main(init: std.process.Init) !void {
             .llama_kv_type_k = server_mod.llama_kv_quant.ggmlType(),
             .llama_kv_type_v = server_mod.llama_kv_quant.ggmlType(),
             .metrics = server_mod.g_metrics,
+            .router_trace_dir = router_trace_dir,
         };
         try server_mod.serve(io, allocator, params, config, host, port, .{
             .max_context_size = ctx_size,
@@ -1594,6 +1611,7 @@ fn runGenServe(
         .ds4_mtp = ds4_mtp,
         .ds4_dspark = ds4_dspark,
         .metrics = server_mod.g_metrics,
+        .router_trace_dir = router_trace_dir,
     };
 
     try server_mod.serve(io, allocator, params, stub.config, host, port, .{
@@ -1720,6 +1738,7 @@ fn runHeadlessServe(
         .ds4_mtp = ds4_mtp,
         .ds4_dspark = ds4_dspark,
         .metrics = server_mod.g_metrics,
+        .router_trace_dir = router_trace_dir,
     };
 
     try server_mod.serve(io, allocator, params, stub.config, host, port, .{
@@ -1934,6 +1953,7 @@ fn runDs4Serve(
         .ds4_mtp = ds4_mtp,
         .ds4_dspark = ds4_dspark,
         .metrics = server_mod.g_metrics,
+        .router_trace_dir = router_trace_dir,
     };
 
     try server_mod.serve(io, allocator, params, config_storage, host, port, .{
@@ -2208,6 +2228,7 @@ fn runLlamaServe(
         .ds4_mtp = ds4_mtp,
         .ds4_dspark = ds4_dspark,
         .metrics = server_mod.g_metrics,
+        .router_trace_dir = router_trace_dir,
     };
 
     try server_mod.serve(io, allocator, params, config_storage, host, port, .{

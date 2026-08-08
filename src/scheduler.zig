@@ -55,6 +55,7 @@ const arch_llama = if (@import("build_options").ios) @import("arch/llama_stub.zi
 const log = @import("log.zig");
 const io_util = @import("io_util.zig");
 const status = @import("status.zig");
+const router_trace_mod = @import("router_trace.zig");
 
 const Transformer = transformer_mod.Transformer;
 const KVCache = transformer_mod.KVCache;
@@ -202,6 +203,11 @@ pub const LoadParams = struct {
     /// Optional metrics sink. Null when --metrics is off (the default).
     /// Stored on the Scheduler and read by the `finishSlot` per-request funnel.
     metrics: ?*metrics_mod.Metrics = null,
+    /// Native dsv4 router-trace output directory (`--router-trace <dir>`).
+    /// When non-empty, every native-dsv4 Slot allocates a `RouterTraceSink`
+    /// and exposes it to routing via `ForwardCtx.router_trace`. Empty (the
+    /// default) disables tracing with zero per-request cost or output.
+    router_trace_dir: []const u8 = "",
     /// The --ctx-size launch flag (0 = unset). Cold-loaded GGUF entries have
     /// no config.json to size their context from, so `preloadCpuState` sizes
     /// the stub config with this — same rule as the startup GGUF paths
@@ -326,6 +332,12 @@ pub const Slot = struct {
     /// requests for prompt-prefix KV reuse) — NOT owned, so `Slot.deinit` must
     /// not free it. Mutually exclusive with `legacy_gen` and `ds4_session`.
     llama_session: ?*arch_llama.LlamaSession = null,
+    /// Per-request native dsv4 router trace sink. Non-null only when
+    /// `Scheduler.router_trace_dir` is non-empty AND the slot targets the
+    /// native dsv4 engine (not the embedded GGUF ds4). Allocated in `init`,
+    /// exposed to routing via `ForwardCtx.router_trace`, flushed + freed in
+    /// `deinit`. Owned by the slot.
+    router_trace: ?router_trace_mod.RouterTraceSink = null,
     /// DiffusionGemma canvas-denoising runner. Created in
     /// `runPrefillDiffusion` for `config.isDiffusion()` models; owns the
     /// dequantized embedding table; freed in `Slot.deinit`. Mutually
@@ -420,6 +432,8 @@ pub const Slot = struct {
         config: *const ModelConfig,
         params: SubmitParams,
         kv_quant_config: transformer_mod.KVQuantConfig,
+        router_trace_dir: []const u8,
+        router_trace_seq: u64,
     ) !*Slot {
         const slot = try allocator.create(Slot);
         errdefer allocator.destroy(slot);
@@ -429,6 +443,23 @@ pub const Slot = struct {
         // supported, and the forward path bypasses `ForwardCtx`. Build
         // sentinel-empty fields so `Slot.deinit` is well-defined on both paths.
         const is_embedded = params.model.ds4_engine != null or params.model.llama_engine != null;
+
+        // Per-request native dsv4 router trace sink. Gated on the config
+        // predicate (native dsv4 arch, NOT the embedded GGUF ds4 engine) so
+        // the slot only carries the sink when it can actually be driven by
+        // `ForwardCtx.router_trace`. Allocates nothing and writes nothing
+        // when tracing is disabled.
+        var router_trace: ?router_trace_mod.RouterTraceSink = null;
+        if (router_trace_dir.len > 0 and !is_embedded and config.dsv4_q_lora_rank > 0) {
+            router_trace = router_trace_mod.RouterTraceSink.init(
+                allocator,
+                io,
+                router_trace_seq,
+                router_trace_dir,
+                0,
+            ) catch null;
+        }
+        errdefer if (router_trace) |*rt| rt.deinit();
 
         // Per-slot KVCache, honoring the process-level kv-quant setting.
         // TurboQuant schemes need `head_dim` at construction time for the
@@ -495,6 +526,7 @@ pub const Slot = struct {
             .diffusion = null,
             .ds4_rng = @intCast(std.Io.Timestamp.now(io, .real).toMilliseconds()),
             .llama_session = null,
+            .router_trace = router_trace,
             .llama_rng = @intCast(std.Io.Timestamp.now(io, .real).toMilliseconds()),
             .prompt_ids = prompt_owned,
             .full_prompt = full_prompt_owned,
@@ -554,6 +586,7 @@ pub const Slot = struct {
             .mrope_delta = slot.mrope_delta,
             .capture_hidden = null,
             .kv_attn_fused = params.kv_attn_fused,
+            .router_trace = if (slot.router_trace) |*rt| rt else null,
         };
 
         return slot;
@@ -589,6 +622,11 @@ pub const Slot = struct {
             self.allocator.free(entries);
         }
         if (self.vision_embeddings) |ve| _ = mlx.mlx_array_free(ve);
+        if (self.router_trace) |*rt| {
+            rt.flushOnce() catch {};
+            rt.deinit();
+            self.router_trace = null;
+        }
         if (self.mrope_pos) |mp| self.allocator.free(mp);
         self.allocator.free(self.prompt_ids);
         self.allocator.free(self.full_prompt);
@@ -1055,6 +1093,15 @@ pub const Scheduler = struct {
     /// Metrics sink. Null when --metrics is off. Populated from LoadParams.
     /// Read once per REQUEST in `finishSlot` — never on the per-token path.
     metrics: ?*metrics_mod.Metrics,
+    /// Native dsv4 router-trace output directory (`--router-trace <dir>`).
+    /// Empty disables tracing. Carried from LoadParams; used by `submit` to
+    /// allocate a per-Slot RouterTraceSink when a request targets native dsv4.
+    router_trace_dir: []const u8,
+    /// Monotonic per-request sequence used as the trace file base name
+    /// (`<dir>/<seq>.bin`, `<dir>/<seq>.json`). Incremented in `submit` on
+    /// every native-dsv4 traced request. Atomic so concurrent conn threads
+    /// get unique ids without holding the queue mutex.
+    router_trace_seq: std.atomic.Value(u64),
     /// In-flight generated-token aggregate: the sum of `completion_tokens`
     /// over the slots still decoding, republished by the inference thread once
     /// per decode tick (O(1) at the tick boundary, NOT per token). The gauge
@@ -1172,6 +1219,8 @@ pub const Scheduler = struct {
             .unload_queue = std.ArrayList(*UnloadRequest).empty,
             .cleanup_queue = std.ArrayList(*Slot).empty,
             .metrics = params.metrics,
+            .router_trace_dir = params.router_trace_dir,
+            .router_trace_seq = std.atomic.Value(u64).init(0),
             .inflight_generated_tokens = std.atomic.Value(u64).init(0),
             .inflight_prefill_tokens = std.atomic.Value(u64).init(0),
             .requests_prefilling = std.atomic.Value(u64).init(0),
@@ -1325,7 +1374,8 @@ pub const Scheduler = struct {
         // different architectures (e.g. pure-attention + hybrid SSM)
         // share one scheduler.
         const slot_config: *const ModelConfig = params.model.config orelse return error.ModelNotReady;
-        const slot = try Slot.init(self.allocator, self.io, slot_config, params, eff_kv_quant);
+        const trace_seq = self.router_trace_seq.fetchAdd(1, .monotonic);
+        const slot = try Slot.init(self.allocator, self.io, slot_config, params, eff_kv_quant, self.router_trace_dir, trace_seq);
         errdefer slot.deinit();
 
         self.queue_mu.lockUncancelable(self.io);
