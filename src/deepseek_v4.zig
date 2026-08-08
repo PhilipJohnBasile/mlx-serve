@@ -664,7 +664,6 @@ pub const Dsv4Model = struct {
     ones_hd_g: mlx.mlx_array, // [hd] f32 ones (param-free per-head RMS weight)
     final_norm_g: mlx.mlx_array,
     hc_head_fn_t: mlx.mlx_array, // [hc*d, hc] f32
-    hada_g: ?mlx.mlx_array, // [ihd, ihd] f32 Hadamard matrix (x @ H == FWHT)
     // fused Sinkhorn kernel (GPU streams; null → host-sync fallback)
     sink_k: ?SinkhornK = null,
     // fused Sinkhorn + y-collapse kernel (`MLX_SERVE_DSV4_SINKY=0` kills;
@@ -783,7 +782,6 @@ pub const Dsv4Model = struct {
         _ = mlx.mlx_array_free(self.ones_hd_g);
         _ = mlx.mlx_array_free(self.final_norm_g);
         _ = mlx.mlx_array_free(self.hc_head_fn_t);
-        if (self.hada_g) |h| _ = mlx.mlx_array_free(h);
         _ = mlx.mlx_array_free(self.sink_consts);
         if (self.sink_k) |*sk| {
             _ = mlx.mlx_fast_metal_kernel_config_free(sk.cfg);
@@ -1212,7 +1210,6 @@ pub fn initModel(gpa: std.mem.Allocator, cfg: *const ModelConfig, dw: Dsv4Weight
         .ones_hd_g = ones_hd_g,
         .final_norm_g = try f32Handle(dw.final_norm, s),
         .hc_head_fn_t = try transposedF32(dw.hc_head_fn, s),
-        .hada_g = if (cfg.dsv4_index_head_dim > 0) try buildHadamardF32(gpa, cfg.dsv4_index_head_dim, s) else null,
         .sink_k = sink_k,
         .sink_y_k = sink_y_k,
         .hc_post_k = hc_post_k,
@@ -6446,7 +6443,7 @@ fn attentionDecodeGpu(m: *const Dsv4Model, alloc: std.mem.Allocator, st: *Dsv4De
                 defer _ = mlx.mlx_array_free(qi_r);
                 const qi_rot = try gpuRopeTail(qi_r, rd, rr.cos, rr.sin, false, m.s);
                 defer _ = mlx.mlx_array_free(qi_rot);
-                const qi_had = try gpuOp2(mlx.mlx_matmul, qi_rot, m.hada_g.?, m.s);
+                const qi_had = try gpuHadamard(qi_rot, m.s);
                 defer _ = mlx.mlx_array_free(qi_had);
                 break :blk try gpuFp4Sim(qi_had, m.s);
             };
@@ -7716,11 +7713,11 @@ fn emitWindowsKernel(
     const cd = c.coff * d;
     // eligibility is the kernel's own conditions, never a model list
     if (d > 1024 or m.rd == 0 or m.rd % 2 != 0) return false;
-    if (rotate) {
-        if (d % 32 != 0) return false;
-        const hg = m.hada_g orelse return false;
-        if (mlx.mlx_array_shape(hg)[0] != @as(c_int, @intCast(d))) return false;
-    } else {
+    // Index-cache emission uses MLX's native FWHT to match the reference
+    // topology exactly. The fused dense accumulation can cross a later FP4
+    // group-scale boundary, so only non-rotating FP8 emission is eligible.
+    if (rotate) return false;
+    {
         if (d <= m.rd or (d - m.rd) % 64 != 0) return false;
     }
     const kernel = emitKernelObj() orelse return false;
@@ -7818,8 +7815,9 @@ fn emitWindowsKernel(
     const eshape = [_]c_int{1};
     const eps_g = uploadF32(&eps_arr, &eshape);
     defer _ = mlx.mlx_array_free(eps_g);
-    // non-rotate never reads hada — norm_g stands in to keep the input list fixed
-    const hada_in = if (rotate) m.hada_g.? else c.norm_g;
+    // This eligible non-rotating kernel never reads `hada`; `norm_g` keeps
+    // the input list fixed while rotated paths use the native FWHT fallback.
+    const hada_in = c.norm_g;
 
     const inputs_arr = [_]mlx.mlx_array{ comp_in, pre_kv_g, pre_sc_g, c.ape_g, c.norm_g, cos_g, sin_g, hada_in, eps_g };
     const inputs_vec = mlx.mlx_vector_array_new_data(&inputs_arr, inputs_arr.len);
@@ -8265,16 +8263,12 @@ fn decChainKernel(
     rr: *const RopeRows,
 ) !?mlx.mlx_array {
     if (!decChainEnabled() or !mlx.streamIsGpu(m.s)) return null; // metal_kernel is GPU-only (CPU stream = uncatchable kill)
+    // Dense custom Hadamard accumulation is close pre-FP4 but can cross a
+    // group-scale threshold. POST=2 therefore uses the native FWHT fallback.
+    if (post == 2) return null;
     // eligibility is the kernel's own conditions, never a model list
     if (D > 1024 or rd == 0 or rd % 2 != 0 or rd > D) return null;
     if (post == 1 and (D <= rd or (D - rd) % 64 != 0)) return null;
-    var hada_in: mlx.mlx_array = undefined;
-    if (post == 2) {
-        if (D % 32 != 0) return null;
-        const hg = m.hada_g orelse return null;
-        if (mlx.mlx_array_shape(hg)[0] != @as(c_int, @intCast(D))) return null;
-        hada_in = hg;
-    }
     const kernel = decChainObj() orelse return null;
     const key = DecChainKey{
         .h = @intCast(H),
@@ -8312,8 +8306,7 @@ fn decChainKernel(
     defer _ = mlx.mlx_array_free(eps_g);
     // unused slots stand in with always-present arrays (never read in-kernel)
     const w_in = rms_w orelse rr.cos;
-    if (post != 2) hada_in = rr.cos;
-    const inputs_arr = [_]mlx.mlx_array{ x, w_in, rr.cos, rr.sin, hada_in, eps_g };
+    const inputs_arr = [_]mlx.mlx_array{ x, w_in, rr.cos, rr.sin, rr.cos, eps_g };
     const inputs_vec = mlx.mlx_vector_array_new_data(&inputs_arr, inputs_arr.len);
     defer _ = mlx.mlx_vector_array_free(inputs_vec);
     var outputs_vec = mlx.mlx_vector_array_new();
@@ -8346,18 +8339,13 @@ fn decChainRowsKernel(
 ) !?mlx.mlx_array {
     std.debug.assert(rows > 1);
     if (!decChainRowsEnabled() or !decChainEnabled() or !mlx.streamIsGpu(m.s)) return null;
+    // Keep grid.z and serial on the same native FWHT fallback for POST=2.
+    if (post == 2) return null;
     std.debug.assert(mlx.mlx_array_size(x) == rows * H * D);
     std.debug.assert(mlx.mlx_array_size(rr.cos) == rows * (rd / 2));
     std.debug.assert(mlx.mlx_array_size(rr.sin) == rows * (rd / 2));
     if (D > 1024 or rd == 0 or rd % 2 != 0 or rd > D) return null;
     if (post == 1 and (D <= rd or (D - rd) % 64 != 0)) return null;
-    var hada_in: mlx.mlx_array = undefined;
-    if (post == 2) {
-        if (D % 32 != 0) return null;
-        const hg = m.hada_g orelse return null;
-        if (mlx.mlx_array_shape(hg)[0] != @as(c_int, @intCast(D))) return null;
-        hada_in = hg;
-    }
     const kernel = decChainRowsObj() orelse return null;
     const key = DecChainRowsKey{
         .rows = @intCast(rows),
@@ -8395,8 +8383,7 @@ fn decChainRowsKernel(
     const eps_g = uploadF32(&eps_arr, &eshape);
     defer _ = mlx.mlx_array_free(eps_g);
     const w_in = rms_w orelse rr.cos;
-    if (post != 2) hada_in = rr.cos;
-    const inputs_arr = [_]mlx.mlx_array{ x, w_in, rr.cos, rr.sin, hada_in, eps_g };
+    const inputs_arr = [_]mlx.mlx_array{ x, w_in, rr.cos, rr.sin, rr.cos, eps_g };
     const inputs_vec = mlx.mlx_vector_array_new_data(&inputs_arr, inputs_arr.len);
     defer _ = mlx.mlx_vector_array_free(inputs_vec);
     var outputs_vec = mlx.mlx_vector_array_new();
@@ -8444,7 +8431,7 @@ fn decChainRowComposed(
         return gpuConcat2(head_sim, tail, 1, m.s);
     }
     if (post == 2) {
-        const had = try gpuOp2(mlx.mlx_matmul, roped, m.hada_g.?, m.s);
+        const had = try gpuHadamard(roped, m.s);
         defer _ = mlx.mlx_array_free(had);
         return gpuFp4Sim(had, m.s);
     }
@@ -8746,7 +8733,7 @@ fn emitWindowsGpu(
     var final = mlx.mlx_array_new();
     defer _ = mlx.mlx_array_free(final);
     if (rotate) {
-        const had = try gpuOp2(mlx.mlx_matmul, roped, m.hada_g.?, m.s);
+        const had = try gpuHadamard(roped, m.s);
         defer _ = mlx.mlx_array_free(had);
         const simd = try gpuFp4Sim(had, m.s);
         defer _ = mlx.mlx_array_free(simd);
@@ -9307,7 +9294,7 @@ fn attentionBatch(m: *Dsv4Model, alloc: std.mem.Allocator, st: *Dsv4DecodeState,
                 defer _ = mlx.mlx_array_free(qi_r);
                 const qi_rot = try gpuRopeTailRows(qi_r, rd, rr.cos, rr.sin, false, m.s);
                 defer _ = mlx.mlx_array_free(qi_rot);
-                const qi_had = try gpuOp2(mlx.mlx_matmul, qi_rot, m.hada_g.?, m.s);
+                const qi_had = try gpuHadamard(qi_rot, m.s);
                 defer _ = mlx.mlx_array_free(qi_had);
                 break :blk try gpuFp4Sim(qi_had, m.s);
             };
@@ -10608,6 +10595,20 @@ fn gpuOp2(comptime f: anytype, a: mlx.mlx_array, b: mlx.mlx_array, s: mlx.mlx_st
     return r;
 }
 
+/// Reference-compatible, last-axis fast Walsh-Hadamard transform. Keeping
+/// this native is important: a mathematically equivalent dense matmul has a
+/// different reduction topology and can cross an FP4 group-scale boundary.
+fn gpuHadamard(x: mlx.mlx_array, s: mlx.mlx_stream) !mlx.mlx_array {
+    const ndim = mlx.mlx_array_ndim(x);
+    std.debug.assert(ndim > 0);
+    const width: usize = @intCast(mlx.mlx_array_shape(x)[ndim - 1]);
+    std.debug.assert(width != 0 and (width & (width - 1)) == 0);
+    var out = mlx.mlx_array_new();
+    const scale: f32 = 1.0 / @sqrt(@as(f32, @floatFromInt(width)));
+    try mlx.check(mlx.mlx_hadamard_transform(&out, x, mlx.mlx_optional_float.some(scale), s));
+    return out;
+}
+
 /// e4m3/e2m1 quant-dequant on a GPU tensor whose LAST dim is a multiple of
 /// `group`. Mirrors simInPlace exactly (ue8m0 scale = 2^ceil(log2(amax/max))).
 fn gpuSim(x: mlx.mlx_array, group: usize, amax_floor: f32, code_max: f32, mant_bits: f32, min_exp: f32, s: mlx.mlx_stream) !mlx.mlx_array {
@@ -10924,6 +10925,32 @@ test "dsv4: Hadamard matrix matmul matches hadamardInPlace" {
     for (want, ptr[0..64]) |w, g| try testing.expectApproxEqAbs(w, g, 1e-4);
 }
 
+test "dsv4: native Hadamard exactly matches host FWHT (GPU)" {
+    if (mlx.noGpuBackend()) return;
+    const s = mlx.gpuStream();
+    defer _ = mlx.mlx_stream_free(s);
+    const rows: usize = 4;
+    const width: usize = 128;
+    var rng = std.Random.DefaultPrng.init(71);
+    var host: [rows * width]f32 = undefined;
+    for (&host) |*v| v.* = (rng.random().float(f32) - 0.5) * 4.0;
+    var want = host;
+    for (0..rows) |row| hadamardInPlace(want[row * width ..][0..width]);
+    const shape = [_]c_int{ rows, width };
+    const x = uploadF32(&host, &shape);
+    defer _ = mlx.mlx_array_free(x);
+    const got_arr = try gpuHadamard(x, s);
+    defer _ = mlx.mlx_array_free(got_arr);
+    const got = try toHostF32(testing.allocator, got_arr, rows * width, s);
+    defer testing.allocator.free(got);
+    for (want, got, 0..) |expected, actual, i| {
+        if (@as(u32, @bitCast(expected)) != @as(u32, @bitCast(actual))) {
+            std.debug.print("native Hadamard mismatch i={d}: host={e} native={e}\n", .{ i, expected, actual });
+            try testing.expect(false);
+        }
+    }
+}
+
 /// Rotate the trailing rd dims of x (last axis) at ONE position, using GPU
 /// cos/sin row tensors of shape [rd/2] uploaded from the SAME host tables
 /// ropeRow reads (bit-identical trig). inverse = conjugate rotation.
@@ -11068,8 +11095,6 @@ test "dsv4: fused emission kernel matches the composed emission graph (GPU)" {
     const s = mlx.gpuStream();
     defer _ = mlx.mlx_stream_free(s);
     const alloc = testing.allocator;
-    const hada = try buildHadamardF32(alloc, 128, s);
-    defer _ = mlx.mlx_array_free(hada);
     const Case = struct { d: usize, rd: usize, r: usize, coff: usize, rotate: bool, base: usize, C: usize, col_off: usize, cin_w: usize, seed_neg_inf: bool };
     const cases = [_]Case{
         // real attn-compressor decode boundary (first window: -inf prev seed)
@@ -11090,7 +11115,6 @@ test "dsv4: fused emission kernel matches the composed emission graph (GPU)" {
         m.s = s;
         m.eps = 1e-6;
         m.rd = tc.rd;
-        m.hada_g = hada;
 
         var c: HostComp = undefined;
         c.head_dim = tc.d;
@@ -11156,7 +11180,14 @@ test "dsv4: fused emission kernel matches the composed emission graph (GPU)" {
         defer mir_k.deinit();
         try emitWindowsGpu(&m, &c, &cstate, &mir_k, cin, tc.col_off, tc.base, tc.C, tc.r, tc.rotate, &fr, alloc);
         emitKernelSetForTest(null);
-        try testing.expect(emit_kernel_hits > hits0); // ENGAGED, not silently declined
+        if (tc.rotate) {
+            // Index-cache rotation stays on MLX native FWHT + FP4. It must
+            // decline this dense fused kernel rather than silently reintroduce
+            // the old group-scale divergence.
+            try testing.expectEqual(hits0, emit_kernel_hits);
+        } else {
+            try testing.expect(emit_kernel_hits > hits0); // FP8 route engaged
+        }
         try testing.expectEqual(n_win, mir_ref.used);
         try testing.expectEqual(n_win, mir_k.used);
 
@@ -11178,19 +11209,16 @@ test "dsv4: fused emission kernel matches the composed emission graph (GPU)" {
     }
 }
 
-test "dsv4: fused decode-chain kernel matches the composed q/kv/idx/o chains (GPU)" {
+test "dsv4: fused decode-chain kernel matches the composed q/kv/o chains (GPU)" {
     if (mlx.noGpuBackend()) return;
     const s = mlx.gpuStream();
     defer _ = mlx.mlx_stream_free(s);
     const alloc = testing.allocator;
-    const hada = try buildHadamardF32(alloc, 128, s);
-    defer _ = mlx.mlx_array_free(hada);
-    // post: 0 = rope only, 1 = fp8 head sim + raw roped tail, 2 = hadamard+fp4
+    // post: 0 = rope only, 1 = fp8 head sim + raw roped tail
     const Case = struct { h: usize, d: usize, rd: usize, rms: bool, ones_w: bool, post: u8, inv: bool };
     const cases = [_]Case{
         .{ .h = 64, .d = 512, .rd = 64, .rms = true, .ones_w = true, .post = 0, .inv = false }, // q chain
         .{ .h = 1, .d = 512, .rd = 64, .rms = true, .ones_w = false, .post = 1, .inv = false }, // kv chain
-        .{ .h = 64, .d = 128, .rd = 64, .rms = false, .ones_w = false, .post = 2, .inv = false }, // idx q chain
         .{ .h = 64, .d = 512, .rd = 64, .rms = false, .ones_w = false, .post = 0, .inv = true }, // o rope⁻¹
         .{ .h = 4, .d = 96, .rd = 32, .rms = true, .ones_w = false, .post = 1, .inv = false }, // mini kv shape
     };
@@ -11253,18 +11281,11 @@ test "dsv4: fused decode-chain kernel matches the composed q/kv/idx/o chains (GP
                 defer _ = mlx.mlx_array_free(fin);
                 try mlx.check(mlx.mlx_array_set(&want_arr, fin));
             },
-            else => {
-                const had = try gpuOp2(mlx.mlx_matmul, roped, hada, s);
-                defer _ = mlx.mlx_array_free(had);
-                const simd = try gpuFp4Sim(had, s);
-                defer _ = mlx.mlx_array_free(simd);
-                try mlx.check(mlx.mlx_array_set(&want_arr, simd));
-            },
+            else => unreachable,
         }
 
         decChainSetForTest(true);
         const hits0 = dec_chain_hits;
-        m.hada_g = if (tc.post == 2) hada else null;
         const got_arr = (try decChainKernel(&m, x, tc.h, tc.d, tc.rd, if (tc.rms) w else null, tc.post, tc.inv, &rr)) orelse {
             decChainSetForTest(null);
             std.debug.print("dec-chain DECLINED h={d} d={d} post={d}\n", .{ tc.h, tc.d, tc.post });
@@ -11288,6 +11309,68 @@ test "dsv4: fused decode-chain kernel matches the composed q/kv/idx/o chains (GP
     }
 }
 
+test "dsv4: native index-Q batch exactly matches serial rows (GPU)" {
+    if (mlx.noGpuBackend()) return;
+    const s = mlx.gpuStream();
+    defer _ = mlx.mlx_stream_free(s);
+    const alloc = testing.allocator;
+    const C: usize = 5;
+    const H: usize = 64;
+    const D: usize = 128;
+    const rd: usize = 64;
+    const half = rd / 2;
+    var m: Dsv4Model = undefined;
+    m.s = s;
+    m.eps = 1e-6;
+
+    var rng = std.Random.DefaultPrng.init(233);
+    const x_host = try alloc.alloc(f32, C * H * D);
+    defer alloc.free(x_host);
+    for (x_host) |*v| v.* = (rng.random().float(f32) - 0.5) * 4.0;
+    const xshape = [_]c_int{ @intCast(C), @intCast(H * D) };
+    const x = uploadF32(x_host, &xshape);
+    defer _ = mlx.mlx_array_free(x);
+    const cos_host = try alloc.alloc(f32, C * half);
+    defer alloc.free(cos_host);
+    const sin_host = try alloc.alloc(f32, C * half);
+    defer alloc.free(sin_host);
+    for (cos_host) |*v| v.* = (rng.random().float(f32) - 0.5) * 2.0;
+    for (sin_host) |*v| v.* = (rng.random().float(f32) - 0.5) * 2.0;
+    const rshape = [_]c_int{ @intCast(C), @intCast(half) };
+    const rr = RopeRows{ .cos = uploadF32(cos_host, &rshape), .sin = uploadF32(sin_host, &rshape) };
+    defer _ = mlx.mlx_array_free(rr.cos);
+    defer _ = mlx.mlx_array_free(rr.sin);
+
+    // Serial oracle: one native FWHT per row, exactly as decode falls back.
+    const serial = try decChainRowsComposed(&m, x, C, H, D, rd, null, 2, false, &rr);
+    defer _ = mlx.mlx_array_free(serial);
+
+    // Normal batched index-Q sequence uses its real [C,H,D] shape.
+    const shape3 = [_]c_int{ @intCast(C), @intCast(H), @intCast(D) };
+    const x3 = try gpuReshape(x, &shape3, s);
+    defer _ = mlx.mlx_array_free(x3);
+    const roped = try gpuRopeTailRows(x3, rd, rr.cos, rr.sin, false, s);
+    defer _ = mlx.mlx_array_free(roped);
+    const had = try gpuHadamard(roped, s);
+    defer _ = mlx.mlx_array_free(had);
+    const batched3 = try gpuFp4Sim(had, s);
+    defer _ = mlx.mlx_array_free(batched3);
+    const batched = try gpuReshape(batched3, &xshape, s);
+    defer _ = mlx.mlx_array_free(batched);
+
+    const want = try toHostF32(alloc, serial, C * H * D, s);
+    defer alloc.free(want);
+    const got = try toHostF32(alloc, batched, C * H * D, s);
+    defer alloc.free(got);
+    try testing.expectEqualSlices(f32, want, got);
+
+    decChainSetForTest(true);
+    defer decChainSetForTest(null);
+    decChainRowsSetForTest(true);
+    defer decChainRowsSetForTest(null);
+    try testing.expect((try decChainRowsKernel(&m, x, C, H, D, rd, null, 2, false, &rr)) == null);
+}
+
 test "dsv4: grid-z decode-chain rows toggle overrides independently" {
     const previous = dec_chain_rows_state;
     defer decChainRowsSetForTest(previous);
@@ -11304,8 +11387,6 @@ test "dsv4: grid-z decode-chain path exactly matches one-row kernels (GPU)" {
     const s = mlx.gpuStream();
     defer _ = mlx.mlx_stream_free(s);
     const alloc = testing.allocator;
-    const hada = try buildHadamardF32(alloc, 128, s);
-    defer _ = mlx.mlx_array_free(hada);
     // These are the serving geometries, not mini substitutes: q, kv,
     // inverse-output, and indexer-q respectively.
     const Case = struct { name: []const u8, H: usize, D: usize, rd: usize, rms: bool, ones_w: bool, post: u8, inv: bool };
@@ -11313,7 +11394,6 @@ test "dsv4: grid-z decode-chain path exactly matches one-row kernels (GPU)" {
         .{ .name = "q", .H = 64, .D = 512, .rd = 64, .rms = true, .ones_w = true, .post = 0, .inv = false },
         .{ .name = "kv", .H = 1, .D = 512, .rd = 64, .rms = true, .ones_w = false, .post = 1, .inv = false },
         .{ .name = "inverse-output", .H = 64, .D = 512, .rd = 64, .rms = false, .ones_w = false, .post = 0, .inv = true },
-        .{ .name = "index-q", .H = 64, .D = 128, .rd = 64, .rms = false, .ones_w = false, .post = 2, .inv = false },
     };
     const Ops = struct {
         fn expectShape(a: mlx.mlx_array, want: []const c_int) !void {
@@ -11353,7 +11433,6 @@ test "dsv4: grid-z decode-chain path exactly matches one-row kernels (GPU)" {
         var m: Dsv4Model = undefined;
         m.s = s;
         m.eps = 1e-6;
-        m.hada_g = hada;
         const half = tc.rd / 2;
         const ws = try alloc.alloc(f32, tc.D);
         defer alloc.free(ws);
