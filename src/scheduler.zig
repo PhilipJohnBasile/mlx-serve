@@ -451,12 +451,17 @@ pub const Slot = struct {
         // when tracing is disabled.
         var router_trace: ?router_trace_mod.RouterTraceSink = null;
         if (router_trace_dir.len > 0 and !is_embedded and config.dsv4_q_lora_rank > 0) {
+            const trace_layers = @max(@as(usize, 1), @as(usize, @intCast(config.num_hidden_layers)));
+            const trace_max_records = (64 * 1024 * 1024) / 24;
+            const trace_max_positions = trace_max_records / trace_layers;
+            const requested_positions = params.prompt_ids.len + @as(usize, @intCast(params.max_tokens));
+            const estimated_records = @min(requested_positions, trace_max_positions) * trace_layers;
             router_trace = router_trace_mod.RouterTraceSink.init(
                 allocator,
                 io,
                 router_trace_seq,
                 router_trace_dir,
-                0,
+                estimated_records,
             ) catch null;
         }
         errdefer if (router_trace) |*rt| rt.deinit();

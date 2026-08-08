@@ -12,6 +12,7 @@ const io_util = @import("io_util.zig");
 const pld_index = @import("pld_index.zig");
 const drafter_mod = @import("drafter.zig");
 const mtp_mod = @import("mtp.zig");
+const router_trace_mod = @import("router_trace.zig");
 
 const Transformer = transformer_mod.Transformer;
 const Tokenizer = tokenizer_mod.Tokenizer;
@@ -1114,6 +1115,7 @@ pub const Generator = struct {
         // `&ctx` to every forward call below; the cache/moe/ssm fields
         // mutate in-place through their pointers.
         var ctx: ForwardCtx = options.ctx orelse xfm.defaultCtx();
+        ctx.router_trace_phase = .prefill;
 
         // Certified lm_head prune gate: the pruned projection proves the
         // ARGMAX, not the tail distribution, so it may engage only when this
@@ -1579,6 +1581,12 @@ pub const Generator = struct {
                 list.* = std.ArrayList(SSMCheckpoint).empty;
             }
         }.f;
+
+        // The final prompt-token logits pass above is still prefill even when
+        // it is a one-token forward. All calls after this point consume
+        // generated input and are decode calls unless a verifier explicitly
+        // switches the phase around its synchronous forward.
+        ctx.router_trace_phase = router_trace_mod.Phase.decode;
 
         // Constrained generation skips the lazy first-sample fast path: we cannot
         // sample the first token until we have applied the grammar mask, and we

@@ -3843,6 +3843,11 @@ pub const ForwardCtx = struct {
     /// embedded-engine requests, and requests to a server started without
     /// `--router-trace`.
     router_trace: ?*router_trace_mod.RouterTraceSink = null,
+    /// Current forward phase for native dsv4 tracing. The Generator sets this
+    /// explicitly because the final prompt-token logits pass is a one-token
+    /// forward but remains part of prefill; null preserves the legacy fallback
+    /// for callers that do not participate in tracing.
+    router_trace_phase: ?router_trace_mod.Phase = null,
     /// Like `capture_hidden` but receives the FULL post-final-norm hidden
     /// `[B, L, H]` (all positions, refcount-shared) instead of the last
     /// position only. Used by the Qwen MTP head, whose committed-history
@@ -16808,6 +16813,17 @@ fn initBert(io: std.Io, allocator: std.mem.Allocator, config: ModelConfig, weigh
 /// forwards do.
 fn forwardDsv4WithImpl(self: *Transformer, ctx: *ForwardCtx, token_ids: mlx.mlx_array, mdl: *dsv4_mod.Dsv4Model) !mlx.mlx_array {
     const n = mlx.mlx_array_size(token_ids);
+    var trace_call_storage: router_trace_mod.Call = undefined;
+    const phase_for_this_forward: router_trace_mod.Phase = ctx.router_trace_phase orelse
+        (if (ctx.cache.step != 0 and n == 1) .decode else .prefill);
+    const trace_call: ?*const router_trace_mod.Call = if (ctx.router_trace) |sink| blk: {
+        trace_call_storage = .{
+            .sink = sink,
+            .phase = phase_for_this_forward,
+            .token_base = @intCast(ctx.cache.step),
+        };
+        break :blk &trace_call_storage;
+    } else null;
     var ids32 = mlx.mlx_array_new();
     defer _ = mlx.mlx_array_free(ids32);
     try mlx.check(mlx.mlx_astype(&ids32, token_ids, .int32, self.s));
@@ -16818,7 +16834,7 @@ fn forwardDsv4WithImpl(self: *Transformer, ctx: *ForwardCtx, token_ids: mlx.mlx_
     if (ctx.cache.step != 0 and n == 1 and mdl.dec_state != null and
         dsv4_mod.lazyDecodeReady(mdl, &mdl.dec_state.?))
     {
-        const lazy = try dsv4_mod.decodeStepLazy(mdl, self.allocator, &mdl.dec_state.?, ids32);
+        const lazy = try dsv4_mod.decodeStepLazyWithTrace(mdl, self.allocator, &mdl.dec_state.?, ids32, trace_call);
         defer _ = mlx.mlx_array_free(lazy);
         ctx.cache.step += 1;
         const shape3 = [_]c_int{ 1, 1, @intCast(mlx.mlx_array_size(lazy)) };
@@ -16837,18 +16853,18 @@ fn forwardDsv4WithImpl(self: *Transformer, ctx: *ForwardCtx, token_ids: mlx.mlx_
         const ids = try self.allocator.alloc(u32, n);
         defer self.allocator.free(ids);
         for (ids, data[0..n]) |*o, id| o.* = @intCast(id);
-        logits_host = try dsv4_mod.prefillIntoState(mdl, self.allocator, &mdl.dec_state.?, ids);
+        logits_host = try dsv4_mod.prefillIntoStateWithTrace(mdl, self.allocator, &mdl.dec_state.?, ids, trace_call);
     } else if (n == 1) {
         // decode: one incremental step — decode==prefill equivalence is
         // pinned by the DSV4_MINI test.
-        logits_host = try dsv4_mod.decodeStep(mdl, self.allocator, &mdl.dec_state.?, @intCast(data[0]));
+        logits_host = try dsv4_mod.decodeStepWithTrace(mdl, self.allocator, &mdl.dec_state.?, @intCast(data[0]), trace_call);
     } else {
         // later prefill chunk: batched state extension (same path as the
         // fresh prefill — extendState is base-position aware).
         const ids = try self.allocator.alloc(u32, n);
         defer self.allocator.free(ids);
         for (ids, data[0..n]) |*o, id| o.* = @intCast(id);
-        logits_host = try dsv4_mod.extendState(mdl, self.allocator, &mdl.dec_state.?, ids);
+        logits_host = try dsv4_mod.extendStateWithTrace(mdl, self.allocator, &mdl.dec_state.?, ids, trace_call);
     }
     defer self.allocator.free(logits_host);
     ctx.cache.step += n;

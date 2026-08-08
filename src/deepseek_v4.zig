@@ -28,6 +28,7 @@ const mlx = @import("mlx.zig");
 const model = @import("model.zig");
 const transformer = @import("transformer.zig");
 const log = @import("log.zig");
+const router_trace_mod = @import("router_trace.zig");
 
 const ModelConfig = model.ModelConfig;
 const QuantParams = transformer.QuantParams;
@@ -2219,7 +2220,7 @@ fn routeToken(m: *const Dsv4Model, h: *const HostLayer, scores: []const f32, id:
 }
 
 /// MoE sublayer on host+mlx: x [s, dim] (post ffn_norm) -> [s, dim].
-fn moeForward(m: *const Dsv4Model, alloc: std.mem.Allocator, li: usize, x: []const f32, ids: []const u32, seq: usize) ![]f32 {
+fn moeForward(m: *const Dsv4Model, alloc: std.mem.Allocator, li: usize, x: []const f32, ids: []const u32, seq: usize, trace_call: ?*const router_trace_mod.Call) ![]f32 {
     const ly = &m.dw.layers[li];
     const h = &m.hl[li];
     const E = m.n_experts;
@@ -2234,6 +2235,9 @@ fn moeForward(m: *const Dsv4Model, alloc: std.mem.Allocator, li: usize, x: []con
     defer alloc.free(wts);
     for (0..seq) |t| {
         routeToken(m, h, scores[t * E ..][0..E], ids[t], indices[t * k ..][0..k], wts[t * k ..][0..k]);
+    }
+    if (trace_call) |tc| {
+        tc.sink.appendHost(tc.phase, tc.token_base, @intCast(li), ids, indices, seq, k);
     }
     // routed experts via gather_qmm: xe [s,1,1,D], ind [s,k]
     const xe = try hostToBf16(x, &.{ @intCast(seq), 1, 1, @intCast(m.dim) }, m.s);
@@ -2345,17 +2349,21 @@ fn hcPostForward(m: *const Dsv4Model, stream_: []f32, out: []const f32, post: []
 
 /// Full prefill forward; returns last-position logits [vocab] (host f32).
 pub fn forwardPrefill(m: *const Dsv4Model, gpa: std.mem.Allocator, ids: []const u32) ![]f32 {
-    return forwardPrefillCapture(m, gpa, ids, null);
+    return forwardPrefillCapture(m, gpa, ids, null, null);
 }
 
 /// Prefill that seeds an incremental-decode state: the batched GPU chunk
 /// path (extendState) from an empty state. Pinned vs the python-oracle
 /// fixtures AND the stateless host re-forward by the DSV4_MINI gates.
 pub fn prefillIntoState(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, ids: []const u32) ![]f32 {
-    return extendState(m, gpa, st, ids);
+    return prefillIntoStateWithTrace(m, gpa, st, ids, null);
 }
 
-fn forwardPrefillCapture(m: *const Dsv4Model, gpa: std.mem.Allocator, ids: []const u32, st: ?*Dsv4DecodeState) ![]f32 {
+pub fn prefillIntoStateWithTrace(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, ids: []const u32, trace_call: ?*const router_trace_mod.Call) ![]f32 {
+    return extendStateWithTrace(m, gpa, st, ids, trace_call);
+}
+
+fn forwardPrefillCapture(m: *const Dsv4Model, gpa: std.mem.Allocator, ids: []const u32, st: ?*Dsv4DecodeState, trace_call: ?*const router_trace_mod.Call) ![]f32 {
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
     const a = arena.allocator();
@@ -2382,7 +2390,7 @@ fn forwardPrefillCapture(m: *const Dsv4Model, gpa: std.mem.Allocator, ids: []con
             const pre = try hcPreForward(m, a, stream_, seq, h.hc_ffn_fn_t, h.hc_ffn_scale, h.hc_ffn_base);
             @memcpy(x_norm, pre.y);
             for (0..seq) |t| rmsNormRow(x_norm[t * d ..][0..d], h.ffn_norm, m.eps);
-            const ffn_out = try moeForward(m, a, li, x_norm, ids, seq);
+            const ffn_out = try moeForward(m, a, li, x_norm, ids, seq, trace_call);
             hcPostForward(m, stream_, ffn_out, pre.post, pre.comb, seq);
         }
     }
@@ -3866,7 +3874,7 @@ test "dsv4: extendChunk .all_gpu + host read matches .all_host bytes (DSV4_MINI)
         defer allocator.free(vl_host);
 
         restoreDecodeState(&st, &snap);
-        const vl_g = try extendChunk(&mdl, allocator, &st, &block, .all_gpu);
+        const vl_g = try extendChunk(&mdl, allocator, &st, &block, .all_gpu, null);
         defer _ = mlx.mlx_array_free(vl_g);
         const vl_read = try toHostF32(allocator, vl_g, block.len * mdl.vocab, mdl.s);
         defer allocator.free(vl_read);
@@ -5424,18 +5432,18 @@ fn traceMemMb(comptime which: enum { active, cache, peak }) usize {
     return v / (1024 * 1024);
 }
 
-fn moeGpu(m: *const Dsv4Model, alloc: std.mem.Allocator, li: usize, x_g: mlx.mlx_array, ids: []const u32) !mlx.mlx_array {
-    return moeGpuImpl(m, alloc, li, x_g, ids, null);
+fn moeGpu(m: *const Dsv4Model, alloc: std.mem.Allocator, li: usize, x_g: mlx.mlx_array, ids: []const u32, trace_call: ?*const router_trace_mod.Call) !mlx.mlx_array {
+    return moeGpuImpl(m, alloc, li, x_g, ids, null, trace_call);
 }
 
 /// `moeGpu` with the token id as a LAZY GPU array (single token): hash-layer
 /// routing looks the tid2eid row up via take on device, so the id never
 /// touches the host (the lazy decode path's requirement).
-fn moeGpuLazy(m: *const Dsv4Model, alloc: std.mem.Allocator, li: usize, x_g: mlx.mlx_array, id_arr: mlx.mlx_array) !mlx.mlx_array {
-    return moeGpuImpl(m, alloc, li, x_g, &.{0}, id_arr);
+fn moeGpuLazy(m: *const Dsv4Model, alloc: std.mem.Allocator, li: usize, x_g: mlx.mlx_array, id_arr: mlx.mlx_array, trace_call: ?*const router_trace_mod.Call) !mlx.mlx_array {
+    return moeGpuImpl(m, alloc, li, x_g, &.{0}, id_arr, trace_call);
 }
 
-fn moeGpuImpl(m: *const Dsv4Model, alloc: std.mem.Allocator, li: usize, x_g: mlx.mlx_array, ids: []const u32, id_arr: ?mlx.mlx_array) !mlx.mlx_array {
+fn moeGpuImpl(m: *const Dsv4Model, alloc: std.mem.Allocator, li: usize, x_g: mlx.mlx_array, ids: []const u32, id_arr: ?mlx.mlx_array, trace_call: ?*const router_trace_mod.Call) !mlx.mlx_array {
     const ly = &m.dw.layers[li];
     const h = &m.hl[li];
     const E = m.n_experts;
@@ -5470,6 +5478,9 @@ fn moeGpuImpl(m: *const Dsv4Model, alloc: std.mem.Allocator, li: usize, x_g: mlx
         defer alloc.free(wts);
         for (0..seq) |t| {
             routeToken(m, h, scores[t * E ..][0..E], ids[t], indices[t * k ..][0..k], wts[t * k ..][0..k]);
+        }
+        if (trace_call) |tc| {
+            tc.sink.appendHost(tc.phase, tc.token_base, @intCast(li), ids, indices, seq, k);
         }
         const up = mlx.mlx_array_new_data(indices.ptr, &ind_shape, 2, .int32);
         defer _ = mlx.mlx_array_free(up);
@@ -5617,8 +5628,8 @@ fn moeGpuImpl(m: *const Dsv4Model, alloc: std.mem.Allocator, li: usize, x_g: mlx
     return try gpuReshape(total, &oshape, m.s);
 }
 
-fn moeDecodeGpu(m: *const Dsv4Model, alloc: std.mem.Allocator, li: usize, x_g: mlx.mlx_array, id: u32) !mlx.mlx_array {
-    return moeGpu(m, alloc, li, x_g, &.{id});
+fn moeDecodeGpu(m: *const Dsv4Model, alloc: std.mem.Allocator, li: usize, x_g: mlx.mlx_array, id: u32, trace_call: ?*const router_trace_mod.Call) !mlx.mlx_array {
+    return moeGpu(m, alloc, li, x_g, &.{id}, trace_call);
 }
 
 /// Single-token attention with the whole q/kv/indexer/output chain on GPU.
@@ -5887,7 +5898,7 @@ fn attentionDecodeGpu(m: *const Dsv4Model, alloc: std.mem.Allocator, st: *Dsv4De
 /// (`decodeStepLazy`) paths. Consumes `stream_in` (ownership transfers) and
 /// returns the final hc stream (owned). `mh_parts` collects DSpark target
 /// captures when armed (sync path only — the lazy path requires DSpark off).
-fn decodeLayers(m: *Dsv4Model, a: std.mem.Allocator, st: *Dsv4DecodeState, stream_in: mlx.mlx_array, id: u32, id_arr: ?mlx.mlx_array, pos: usize, rr_plain: *const RopeRows, rr_yarn: *const RopeRows, fr_plain: *const Freqs, fr_yarn: *const Freqs, deferred: *std.ArrayList(DeferredCompRow), mh_parts: *std.ArrayList(mlx.mlx_array)) !mlx.mlx_array {
+fn decodeLayers(m: *Dsv4Model, a: std.mem.Allocator, st: *Dsv4DecodeState, stream_in: mlx.mlx_array, id: u32, id_arr: ?mlx.mlx_array, pos: usize, rr_plain: *const RopeRows, rr_yarn: *const RopeRows, fr_plain: *const Freqs, fr_yarn: *const Freqs, deferred: *std.ArrayList(DeferredCompRow), mh_parts: *std.ArrayList(mlx.mlx_array), trace_call: ?*const router_trace_mod.Call) !mlx.mlx_array {
     var stream_g = stream_in;
     // Timing-only probes (GARBAGE OUTPUT): `MLX_SERVE_DSV4_LAYER_CAP=N`
     // truncates the walk, `MLX_SERVE_DSV4_SKIP_MOE=1` drops the ffn
@@ -5919,7 +5930,7 @@ fn decodeLayers(m: *Dsv4Model, a: std.mem.Allocator, st: *Dsv4DecodeState, strea
             defer freeHcPre(&pre);
             const x = try gpuRms(pre.y, h.ffn_norm_g, m.eps, m.s);
             defer _ = mlx.mlx_array_free(x);
-            const ffn_out = if (id_arr) |ia| try moeGpuLazy(m, a, li, x, ia) else try moeDecodeGpu(m, a, li, x, id);
+            const ffn_out = if (id_arr) |ia| try moeGpuLazy(m, a, li, x, ia, trace_call) else try moeDecodeGpu(m, a, li, x, id, trace_call);
             defer _ = mlx.mlx_array_free(ffn_out);
             const ns = try hcPostGpu(m, stream_g, ffn_out, &pre);
             _ = mlx.mlx_array_free(stream_g);
@@ -5942,6 +5953,10 @@ fn decodeLayers(m: *Dsv4Model, a: std.mem.Allocator, st: *Dsv4DecodeState, strea
 /// are the two hc-mix syncs per layer (Sinkhorn), the MoE routing sync, one
 /// combined compressor-input sync on ratio≠0 layers, and the final logits.
 pub fn decodeStep(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, id: u32) ![]f32 {
+    return decodeStepWithTrace(m, gpa, st, id, null);
+}
+
+pub fn decodeStepWithTrace(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, id: u32, trace_call: ?*const router_trace_mod.Call) ![]f32 {
     const tracing = dsv4TraceEnabled();
     var clk: DsparkClock = if (tracing) DsparkClock.init() else undefined;
     const gap_us: u64 = if (tracing and trace_last_end != null)
@@ -5996,7 +6011,7 @@ pub fn decodeStep(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, i
         for (mh_parts.items) |p| _ = mlx.mlx_array_free(p);
         mh_parts.deinit(a);
     }
-    stream_g = try decodeLayers(m, a, st, stream_g, id, null, pos, &rr_plain, &rr_yarn, fr_plain, fr_yarn, &deferred, &mh_parts);
+    stream_g = try decodeLayers(m, a, st, stream_g, id, null, pos, &rr_plain, &rr_yarn, fr_plain, fr_yarn, &deferred, &mh_parts, trace_call);
     // Schedule the deferred compressor side-branches WITH the head walk:
     // they share ~the whole cone with the logits, so the GPU computes them
     // for free during the head sync and `processDeferredComp`'s eval
@@ -6040,6 +6055,10 @@ pub fn decodeStep(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, i
 /// and drain just before the next window-boundary token's emission build, a
 /// prefill/verify chunk, or teardown. Requires `lazyDecodeReady`.
 pub fn decodeStepLazy(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, id_arr: mlx.mlx_array) !mlx.mlx_array {
+    return decodeStepLazyWithTrace(m, gpa, st, id_arr, null);
+}
+
+pub fn decodeStepLazyWithTrace(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, id_arr: mlx.mlx_array, trace_call: ?*const router_trace_mod.Call) !mlx.mlx_array {
     if (!lazy_decode_logged) {
         lazy_decode_logged = true;
         log.info("dsv4: lazy pipelined decode engaged\n", .{});
@@ -6098,7 +6117,7 @@ pub fn decodeStepLazy(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeStat
     }
     var mh_parts = std.ArrayList(mlx.mlx_array).empty; // DSpark off by contract
     defer mh_parts.deinit(a);
-    stream_g = try decodeLayers(m, a, st, stream_g, 0, id_arr, pos, &rr_plain, &rr_yarn, fr_plain, fr_yarn, &deferred, &mh_parts);
+    stream_g = try decodeLayers(m, a, st, stream_g, 0, id_arr, pos, &rr_plain, &rr_yarn, fr_plain, fr_yarn, &deferred, &mh_parts, trace_call);
     // schedule the deferred rows with the token's own pipeline flow, then
     // move them to the pending stash (host pushes happen at the next drain)
     if (deferred.items.len > 0) {
@@ -8075,13 +8094,26 @@ fn extendChunkShouldClearCache(c_tokens: usize) bool {
 /// chunked-prefill continuation; ids.len ≥ 1). Returns the LAST position's
 /// logits [vocab] (gpa-owned).
 pub fn extendState(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, ids: []const u32) ![]f32 {
+    return extendStateWithTrace(m, gpa, st, ids, null);
+}
+
+pub fn extendStateWithTrace(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, ids: []const u32, trace_call: ?*const router_trace_mod.Call) ![]f32 {
     var logits: ?[]f32 = null;
     errdefer if (logits) |l| gpa.free(l);
     var done: usize = 0;
     while (done < ids.len) {
         const c_tokens = @min(prefillSub(), ids.len - done);
         if (logits) |l| gpa.free(l);
-        logits = try extendChunk(m, gpa, st, ids[done .. done + c_tokens], .last_host);
+        var chunk_call_storage: router_trace_mod.Call = undefined;
+        const chunk_call: ?*const router_trace_mod.Call = if (trace_call) |tc| blk: {
+            chunk_call_storage = .{
+                .sink = tc.sink,
+                .phase = tc.phase,
+                .token_base = tc.token_base + @as(u32, @intCast(done)),
+            };
+            break :blk &chunk_call_storage;
+        } else null;
+        logits = try extendChunk(m, gpa, st, ids[done .. done + c_tokens], .last_host, chunk_call);
         done += c_tokens;
         if (extendChunkShouldClearCache(c_tokens)) _ = mlx.mlx_clear_cache();
     }
@@ -8092,8 +8124,12 @@ pub fn extendState(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, 
 /// logits ([ids.len * vocab] f32, row-major). One chunk only by design — the
 /// DSpark verify block is ≤ block_size+1 tokens.
 pub fn extendStateAllLogits(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, ids: []const u32) ![]f32 {
+    return extendStateAllLogitsWithTrace(m, gpa, st, ids, null);
+}
+
+pub fn extendStateAllLogitsWithTrace(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, ids: []const u32, trace_call: ?*const router_trace_mod.Call) ![]f32 {
     std.debug.assert(ids.len <= prefillSub());
-    return extendChunk(m, gpa, st, ids, .all_host);
+    return extendChunk(m, gpa, st, ids, .all_host, trace_call);
 }
 
 /// What extendChunk hands back. `.last_host`/`.all_host` sync and return
@@ -8108,7 +8144,7 @@ fn ExtendRet(comptime mode: ExtendMode) type {
     return if (mode == .all_gpu) mlx.mlx_array else []f32;
 }
 
-fn extendChunk(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, ids: []const u32, comptime mode: ExtendMode) !ExtendRet(mode) {
+fn extendChunk(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, ids: []const u32, comptime mode: ExtendMode, trace_call: ?*const router_trace_mod.Call) !ExtendRet(mode) {
     var chunk_clk: DsparkClock = if (m.ds_prof != null) DsparkClock.init() else undefined;
     if (m.ds_prof != null) m.ds_prof_comp_sync_ns = 0;
     const tracing = dsv4TraceEnabled();
@@ -8185,7 +8221,7 @@ fn extendChunk(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, ids:
             defer freeHcPre(&pre);
             const x = try gpuRms(pre.y, h.ffn_norm_g, m.eps, m.s);
             defer _ = mlx.mlx_array_free(x);
-            const ffn_out = try moeGpu(m, a, li, x, ids);
+            const ffn_out = try moeGpu(m, a, li, x, ids, trace_call);
             defer _ = mlx.mlx_array_free(ffn_out);
             const ns = try hcPostBatch(m, stream_g, ffn_out, C, &pre);
             _ = mlx.mlx_array_free(stream_g);
@@ -8680,7 +8716,7 @@ pub fn dsparkDraft(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, 
             defer freeHcPre(&pre);
             const x = try gpuRms(pre.y, h.ffn_norm_g, m.eps, m.s);
             defer _ = mlx.mlx_array_free(x);
-            const ffn_out = try moeGpu(m, a, li, x, draft_ids);
+            const ffn_out = try moeGpu(m, a, li, x, draft_ids, null);
             defer _ = mlx.mlx_array_free(ffn_out);
             if (ds_trace) {
                 const fh = try toHostF32(a, ffn_out, B * d, m.s);
@@ -8943,7 +8979,7 @@ pub fn dsparkBeginWith(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeSta
     verify[0] = t1;
     @memcpy(verify[1 .. B + 1], draft.ids[1 .. B + 1]);
     std.debug.assert(B + 1 <= prefillSub());
-    const vl_g = try extendChunk(m, gpa, st, verify[0 .. B + 1], .all_gpu);
+    const vl_g = try extendChunk(m, gpa, st, verify[0 .. B + 1], .all_gpu, null);
     return .{ .snap = snap, .vl_g = vl_g, .b = B, .verify = verify, .phases = ph, .clk = clk, .prof_on = prof_on };
 }
 

@@ -199,6 +199,12 @@ pub const RouterTraceSink = struct {
     }
 };
 
+pub const Call = struct {
+    sink: *RouterTraceSink,
+    phase: Phase,
+    token_base: u32,
+};
+
 // ── unit tests (TDD-first) ────────────────────────────────────────────────
 
 const testing = std.testing;
