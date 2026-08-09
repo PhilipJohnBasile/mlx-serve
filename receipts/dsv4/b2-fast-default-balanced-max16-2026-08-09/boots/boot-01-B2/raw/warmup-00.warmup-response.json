@@ -1,0 +1,36 @@
+{
+  "choices": [
+    {
+      "finish_reason": "length",
+      "index": 0,
+      "logprobs": null,
+      "message": {
+        "content": "Here are four concise, actionable improvements for speculative decoding while preserving exact greedy-token",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1786253261,
+  "id": "chatcmpl-1786253261802",
+  "model": "dspark-lite-A",
+  "object": "chat.completion",
+  "system_fingerprint": "mlx-serve",
+  "timings": {
+    "cached_n": 0,
+    "predicted_ms": 8653.886,
+    "predicted_n": 16,
+    "predicted_per_second": 1.849,
+    "prompt_ms": 1126.212,
+    "prompt_n": 50,
+    "prompt_per_second": 44.397,
+    "tokenize_ms": 36.044
+  },
+  "usage": {
+    "completion_tokens": 16,
+    "prompt_tokens": 50,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 66
+  }
+}

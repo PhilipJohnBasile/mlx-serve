@@ -1,0 +1,194 @@
+[
+  {
+    "arm": "S",
+    "boot_id": "boot-00-S",
+    "metrics_histogram_delta": {
+      "available": true,
+      "histograms": {
+        "decode_time_seconds": {
+          "count": 1,
+          "sum_seconds": 0.5030497930000001
+        },
+        "time_to_first_token_seconds": {
+          "count": 1,
+          "sum_seconds": 0.289436458
+        }
+      }
+    },
+    "output_contract": {
+      "completion_tokens": 16,
+      "content": "Here are four concise, actionable improvements for speculative decoding while preserving exact greedy-token",
+      "finish_reason": "length"
+    },
+    "output_contract_sha256": "f6767e96b28f4c34cf82bff43a29886bb0f2335f1e25a8e107d96f72c7685b81",
+    "raw": {
+      "metrics_after": "receipts/dsv4/b2-fast-default-balanced-max16-2026-08-09/boots/boot-00-S/raw/measured-00.metrics-after.json",
+      "metrics_before": "receipts/dsv4/b2-fast-default-balanced-max16-2026-08-09/boots/boot-00-S/raw/measured-00.metrics-before.json",
+      "response": "receipts/dsv4/b2-fast-default-balanced-max16-2026-08-09/boots/boot-00-S/raw/measured-00.response.json"
+    },
+    "request_id": "measured-00",
+    "timings": {
+      "cached_n": 0,
+      "predicted_ms": 506.642,
+      "predicted_n": 16,
+      "predicted_per_second": 31.58,
+      "prompt_ms": 289.432,
+      "prompt_n": 50,
+      "prompt_per_second": 172.752,
+      "tokenize_ms": 0.425
+    },
+    "usage": {
+      "completion_tokens": 16,
+      "prompt_tokens": 50,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "total_tokens": 66
+    },
+    "wall_seconds": 0.797065625
+  },
+  {
+    "arm": "B2",
+    "boot_id": "boot-01-B2",
+    "metrics_histogram_delta": {
+      "available": true,
+      "histograms": {
+        "decode_time_seconds": {
+          "count": 1,
+          "sum_seconds": 10.237276376000002
+        },
+        "time_to_first_token_seconds": {
+          "count": 1,
+          "sum_seconds": 1.0965629160000003
+        }
+      }
+    },
+    "output_contract": {
+      "completion_tokens": 16,
+      "content": "Here are four concise, actionable improvements for speculative decoding while preserving exact greedy-token",
+      "finish_reason": "length"
+    },
+    "output_contract_sha256": "f6767e96b28f4c34cf82bff43a29886bb0f2335f1e25a8e107d96f72c7685b81",
+    "raw": {
+      "metrics_after": "receipts/dsv4/b2-fast-default-balanced-max16-2026-08-09/boots/boot-01-B2/raw/measured-00.metrics-after.json",
+      "metrics_before": "receipts/dsv4/b2-fast-default-balanced-max16-2026-08-09/boots/boot-01-B2/raw/measured-00.metrics-before.json",
+      "response": "receipts/dsv4/b2-fast-default-balanced-max16-2026-08-09/boots/boot-01-B2/raw/measured-00.response.json"
+    },
+    "request_id": "measured-00",
+    "timings": {
+      "cached_n": 0,
+      "predicted_ms": 11112.045,
+      "predicted_n": 16,
+      "predicted_per_second": 1.44,
+      "prompt_ms": 1096.56,
+      "prompt_n": 50,
+      "prompt_per_second": 45.597,
+      "tokenize_ms": 0.392
+    },
+    "usage": {
+      "completion_tokens": 16,
+      "prompt_tokens": 50,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "total_tokens": 66
+    },
+    "wall_seconds": 12.209529042
+  },
+  {
+    "arm": "B2",
+    "boot_id": "boot-02-B2",
+    "metrics_histogram_delta": {
+      "available": true,
+      "histograms": {
+        "decode_time_seconds": {
+          "count": 1,
+          "sum_seconds": 5.467095126
+        },
+        "time_to_first_token_seconds": {
+          "count": 1,
+          "sum_seconds": 0.30392312500000007
+        }
+      }
+    },
+    "output_contract": {
+      "completion_tokens": 16,
+      "content": "Here are four concise, actionable improvements for speculative decoding while preserving exact greedy-token",
+      "finish_reason": "length"
+    },
+    "output_contract_sha256": "f6767e96b28f4c34cf82bff43a29886bb0f2335f1e25a8e107d96f72c7685b81",
+    "raw": {
+      "metrics_after": "receipts/dsv4/b2-fast-default-balanced-max16-2026-08-09/boots/boot-02-B2/raw/measured-00.metrics-after.json",
+      "metrics_before": "receipts/dsv4/b2-fast-default-balanced-max16-2026-08-09/boots/boot-02-B2/raw/measured-00.metrics-before.json",
+      "response": "receipts/dsv4/b2-fast-default-balanced-max16-2026-08-09/boots/boot-02-B2/raw/measured-00.response.json"
+    },
+    "request_id": "measured-00",
+    "timings": {
+      "cached_n": 0,
+      "predicted_ms": 6316.992,
+      "predicted_n": 16,
+      "predicted_per_second": 2.533,
+      "prompt_ms": 303.918,
+      "prompt_n": 50,
+      "prompt_per_second": 164.518,
+      "tokenize_ms": 0.413
+    },
+    "usage": {
+      "completion_tokens": 16,
+      "prompt_tokens": 50,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "total_tokens": 66
+    },
+    "wall_seconds": 6.62186075
+  },
+  {
+    "arm": "S",
+    "boot_id": "boot-03-S",
+    "metrics_histogram_delta": {
+      "available": true,
+      "histograms": {
+        "decode_time_seconds": {
+          "count": 1,
+          "sum_seconds": 0.5305037520000002
+        },
+        "time_to_first_token_seconds": {
+          "count": 1,
+          "sum_seconds": 0.29251270799999995
+        }
+      }
+    },
+    "output_contract": {
+      "completion_tokens": 16,
+      "content": "Here are four concise, actionable improvements for speculative decoding while preserving exact greedy-token",
+      "finish_reason": "length"
+    },
+    "output_contract_sha256": "f6767e96b28f4c34cf82bff43a29886bb0f2335f1e25a8e107d96f72c7685b81",
+    "raw": {
+      "metrics_after": "receipts/dsv4/b2-fast-default-balanced-max16-2026-08-09/boots/boot-03-S/raw/measured-00.metrics-after.json",
+      "metrics_before": "receipts/dsv4/b2-fast-default-balanced-max16-2026-08-09/boots/boot-03-S/raw/measured-00.metrics-before.json",
+      "response": "receipts/dsv4/b2-fast-default-balanced-max16-2026-08-09/boots/boot-03-S/raw/measured-00.response.json"
+    },
+    "request_id": "measured-00",
+    "timings": {
+      "cached_n": 0,
+      "predicted_ms": 533.932,
+      "predicted_n": 16,
+      "predicted_per_second": 29.966,
+      "prompt_ms": 292.508,
+      "prompt_n": 50,
+      "prompt_per_second": 170.936,
+      "tokenize_ms": 0.32
+    },
+    "usage": {
+      "completion_tokens": 16,
+      "prompt_tokens": 50,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "total_tokens": 66
+    },
+    "wall_seconds": 0.827375792
+  }
+]
