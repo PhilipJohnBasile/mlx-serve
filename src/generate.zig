@@ -9054,3 +9054,336 @@ test "dsv4: stochastic dspark engages at sampled temperature and keeps the exit 
     try testing.expectEqual(xfm2.dsv4.?.dec_state.?.n, gen2.ctx.cache.step);
     std.debug.print("dsv4 stochastic dspark (b==0 gate): {d} single-token rounds\n", .{n2});
 }
+
+test "dsv4: stochastic dspark reproduces the serial next-token distribution (DSV4_MINI)" {
+    // This is deliberately a distribution gate, not a sampled-transcript
+    // equality test: DSpark evaluates every correction/bonus row at once, so
+    // its MLX categorical draws have a different schedule from serial decode.
+    // The small fabricated checkpoint is nevertheless a real 4-layer V=64
+    // DSV4 model, and both arms run the actual Generator entry points.
+    _ = setenv("MLX_SERVE_DSV4_DSPARK", "1", 1);
+    defer _ = unsetenv("MLX_SERVE_DSV4_DSPARK");
+    const path_z = std.c.getenv("DSV4_MINI") orelse return;
+    if (mlx.noGpuBackend()) return;
+    // Honor the explicit production kill switch: the preceding engagement
+    // test owns the fallback contract; this gate owns the armed stochastic arm.
+    const stoch_raw: ?[]const u8 = if (std.c.getenv("MLX_SERVE_DSV4_DSPARK_STOCH")) |p| std.mem.span(p) else null;
+    if (!Generator.dsparkStochEnabledFromEnv(stoch_raw)) return;
+
+    const Gate = struct {
+        const Delta = struct { value: f32, index: usize };
+
+        fn seed(trial: u64, salt: u64) u64 {
+            return std.hash.Wyhash.hash(salt, std.mem.asBytes(&trial));
+        }
+
+        fn clearPending(gen: *Generator) void {
+            if (gen.has_pending_logits) {
+                _ = mlx.mlx_array_free(gen.pending_logits);
+                gen.has_pending_logits = false;
+            }
+            if (gen.has_pending_token) {
+                _ = mlx.mlx_array_free(gen.pending_token);
+                gen.has_pending_token = false;
+            }
+        }
+
+        fn resetBookkeeping(gen: *Generator, entry_n: usize, t1: u32) void {
+            gen.next_token_id = t1;
+            gen.step = 0;
+            gen.last_cache_clear_step = 0;
+            gen.completion_tokens = 0;
+            gen.finish_reason = "length";
+            gen.done = false;
+            gen.consecutive_pad = 0;
+            gen.generated_ids.clearRetainingCapacity();
+            gen.ctx.cache.step = entry_n;
+        }
+
+        fn bucketFor(rank: [64]u8, token: u32, supported: usize) ?usize {
+            if (token >= rank.len or rank[token] == std.math.maxInt(u8)) return null;
+            return @min(@as(usize, 3), @as(usize, rank[token]) * 4 / supported);
+        }
+
+        fn twoSampleZ(left: u32, right: u32, trials: usize) f64 {
+            const n: f64 = @floatFromInt(trials);
+            const p_left = @as(f64, @floatFromInt(left)) / n;
+            const p_right = @as(f64, @floatFromInt(right)) / n;
+            const pooled = @as(f64, @floatFromInt(left + right)) / (2.0 * n);
+            const variance = pooled * (1.0 - pooled) * 2.0 / n;
+            return if (variance == 0.0) if (p_left == p_right) 0.0 else std.math.inf(f64) else @abs(p_left - p_right) / @sqrt(variance);
+        }
+
+        /// Equal-size two-sample Pearson homogeneity statistic. Four coarse
+        /// rank buckets catch broad sampler/correction drift without making a
+        /// 64-cell test sparse or brittle.
+        fn homogeneity(left: [4]u32, right: [4]u32) f64 {
+            var stat: f64 = 0.0;
+            for (left, right) |a, b| {
+                const total: f64 = @floatFromInt(a + b);
+                if (total == 0.0) continue;
+                const d = @as(f64, @floatFromInt(a)) - @as(f64, @floatFromInt(b));
+                stat += d * d / total;
+            }
+            return stat;
+        }
+
+        fn copyF32(alloc: std.mem.Allocator, arr: mlx.mlx_array, len: usize, s: mlx.mlx_stream) ![]f32 {
+            var f32_arr = mlx.mlx_array_new();
+            defer _ = mlx.mlx_array_free(f32_arr);
+            try mlx.check(mlx.mlx_astype(&f32_arr, arr, .float32, s));
+            try mlx.check(mlx.mlx_array_eval(f32_arr));
+            const data = mlx.mlx_array_data_float32(f32_arr) orelse return error.MlxArrayDataNull;
+            return alloc.dupe(f32, data[0..len]);
+        }
+
+        fn maxAbsDelta(a: []const f32, b: []const f32) Delta {
+            std.debug.assert(a.len == b.len);
+            var out: Delta = .{ .value = 0, .index = 0 };
+            for (a, b, 0..) |av, bv, i| {
+                const delta = @abs(av - bv);
+                if (delta > out.value) out = .{ .value = delta, .index = i };
+            }
+            return out;
+        }
+    };
+
+    const path = std.mem.span(path_z);
+    const allocator = testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const cfg_path = try std.fmt.allocPrint(allocator, "{s}/config.json", .{path});
+    defer allocator.free(cfg_path);
+    const file = try std.Io.Dir.openFileAbsolute(io, cfg_path, .{});
+    var rb: [4096]u8 = undefined;
+    var rs = file.reader(io, &rb);
+    const cfg_json = try rs.interface.allocRemaining(allocator, .limited(1 << 20));
+    file.close(io);
+    defer allocator.free(cfg_json);
+    const cfg = try model_mod.parseConfigFromJson(allocator, cfg_json);
+    const shard_path = try std.fmt.allocPrint(allocator, "{s}/model-mini.safetensors", .{path});
+    defer allocator.free(shard_path);
+    var weights = try model_mod.loadWeightsSingleFile(allocator, shard_path);
+    defer weights.deinit();
+
+    // `SamplingParams.seed` does not key sampleTokenLazy's categorical path
+    // today; it only reaches synchronous sampleToken and the Generator accept
+    // PRNG. Keep that truth gap explicit here: reset MLX's global stream below
+    // rather than widening this test into a request-local-key refactor.
+    const sampled = SamplingParams{ .temperature = 10.0, .top_k = 16, .top_p = 0.90 };
+    var tok_dummy: Tokenizer = undefined;
+    var prompt: [64]u32 = undefined;
+    for (&prompt, 0..) |*token, i| token.* = @intCast(i);
+
+    var xfm = try Transformer.init(io, allocator, cfg, &weights);
+    defer xfm.deinit();
+    const mdl = xfm.dsv4.?;
+    try testing.expectEqual(@as(usize, 4), mdl.n_layers);
+    try testing.expectEqual(@as(usize, 64), mdl.vocab);
+    try testing.expect(mdl.n_mtp > 0);
+
+    var gen = try Generator.initWithOptions(io, allocator, &xfm, &tok_dummy, &prompt, 8, sampled, &.{}, .{
+        .mtp_enabled = true,
+        .skip_lazy_preforward = true,
+    });
+    defer gen.deinit(allocator);
+    std.debug.print("dsv4 stochastic distribution setup: layers={d} vocab={d} mtp={d} enabled={} stochastic={}\n", .{
+        mdl.n_layers,
+        mdl.vocab,
+        mdl.n_mtp,
+        gen.dspark_enabled,
+        gen.dspark_stochastic,
+    });
+    try testing.expect(gen.dspark_enabled);
+    try testing.expect(gen.dspark_stochastic);
+
+    // One prefilled state feeds both arms. The snapshot is offset-only for
+    // append-only device rows, so sharing the model (rather than comparing
+    // two independently initialized copies) makes every trial's serial and
+    // DSpark entry byte-identical.
+    var entry = try dsv4_mod.snapshotDecodeState(&mdl.dec_state.?, allocator);
+    defer entry.deinit();
+
+    var chosen_t1: ?u32 = null;
+    var proposal_token: u32 = undefined;
+    var verify_proposal_p: f32 = undefined;
+    var candidate: u32 = 1; // avoid the terminal-pad entry guard
+    while (candidate < mdl.vocab and chosen_t1 == null) : (candidate += 1) {
+        dsv4_mod.restoreDecodeState(&mdl.dec_state.?, &entry);
+        var pending = try dsv4_mod.dsparkBegin(mdl, allocator, &mdl.dec_state.?, candidate);
+        defer pending.deinit();
+        if (pending.b == 0) continue;
+
+        const shape = [_]c_int{ 1, @intCast(pending.b + 1), @intCast(mdl.vocab) };
+        var verify_logits = mlx.mlx_array_new();
+        defer _ = mlx.mlx_array_free(verify_logits);
+        try mlx.check(mlx.mlx_reshape(&verify_logits, pending.vl_g, &shape, 3, xfm.s));
+        const probs = try probsAllPositions(verify_logits, sampled, xfm.s);
+        defer _ = mlx.mlx_array_free(probs);
+        try mlx.check(mlx.mlx_array_eval(probs));
+        const p = mlx.mlx_array_data_float32(probs) orelse return error.MlxArrayDataNull;
+        const draft = pending.verify[1];
+        if (p[draft] > 0.0) {
+            chosen_t1 = candidate;
+            proposal_token = draft;
+            verify_proposal_p = p[draft];
+        }
+    }
+    dsv4_mod.restoreDecodeState(&mdl.dec_state.?, &entry);
+    if (mdl.dec_state.?.anchors) |*anchors| anchors.armed = false;
+    const t1 = chosen_t1 orelse {
+        std.debug.print("dsv4 stochastic distribution: no legal t1 after {d} candidates\n", .{mdl.vocab - 1});
+        return error.TestExpectedResult;
+    };
+
+    // Build the four buckets from the real serial target distribution after
+    // t1. The probe is only for ranks; every trial below still obtains t2 by
+    // calling Generator.next twice from a restored entry state.
+    const t1_i32: i32 = @intCast(t1);
+    const t1_shape = [_]c_int{ 1, 1 };
+    const t1_arr = mlx.mlx_array_new_data(&t1_i32, &t1_shape, 2, .int32);
+    defer _ = mlx.mlx_array_free(t1_arr);
+
+    // Narrow raw-logit seam: these three values must describe the identical
+    // entry state and t1 before any sampling/correction can explain a drift.
+    // `decodeStep` is the eager serial reference; `forwardWith` is the real
+    // Generator serial path; pending row 0 is the DSpark verify target.
+    dsv4_mod.restoreDecodeState(&mdl.dec_state.?, &entry);
+    const eager_logits = try dsv4_mod.decodeStep(mdl, allocator, &mdl.dec_state.?, t1);
+    defer allocator.free(eager_logits);
+    dsv4_mod.restoreDecodeState(&mdl.dec_state.?, &entry);
+    Gate.resetBookkeeping(&gen, entry.n, t1);
+    const serial_logits = try xfm.forwardWith(&gen.ctx, t1_arr);
+    defer _ = mlx.mlx_array_free(serial_logits);
+    const generator_logits = try Gate.copyF32(allocator, serial_logits, mdl.vocab, xfm.s);
+    defer allocator.free(generator_logits);
+    dsv4_mod.restoreDecodeState(&mdl.dec_state.?, &entry);
+    if (mdl.dec_state.?.anchors) |*anchors| anchors.armed = false;
+    var raw_pending = try dsv4_mod.dsparkBegin(mdl, allocator, &mdl.dec_state.?, t1);
+    defer raw_pending.deinit();
+    try testing.expect(raw_pending.b > 0);
+    try testing.expectEqual(proposal_token, raw_pending.verify[1]);
+    const verify_row0 = try Gate.copyF32(allocator, raw_pending.vl_g, mdl.vocab, xfm.s);
+    defer allocator.free(verify_row0);
+    const eager_vs_generator = Gate.maxAbsDelta(eager_logits, generator_logits);
+    const generator_vs_verify = Gate.maxAbsDelta(generator_logits, verify_row0);
+    std.debug.print(
+        "dsv4 stochastic raw row0: t1={d} entry_n={d} eager_vs_generator={d:.6}@{d} generator_vs_verify={d:.6}@{d} pending_b={d}\n",
+        .{ t1, entry.n, eager_vs_generator.value, eager_vs_generator.index, generator_vs_verify.value, generator_vs_verify.index, raw_pending.b },
+    );
+    dsv4_mod.restoreDecodeState(&mdl.dec_state.?, &entry);
+    if (mdl.dec_state.?.anchors) |*anchors| anchors.armed = false;
+
+    const serial_probs = try probsAtLastPos(serial_logits, sampled, xfm.s);
+    defer _ = mlx.mlx_array_free(serial_probs);
+    try mlx.check(mlx.mlx_array_eval(serial_probs));
+    const serial_p = mlx.mlx_array_data_float32(serial_probs) orelse return error.MlxArrayDataNull;
+    const serial_probs_all = try probsAllPositions(serial_logits, sampled, xfm.s);
+    defer _ = mlx.mlx_array_free(serial_probs_all);
+    try mlx.check(mlx.mlx_array_eval(serial_probs_all));
+    const serial_p_all = mlx.mlx_array_data_float32(serial_probs_all) orelse return error.MlxArrayDataNull;
+    var rank: [64]u8 = @splat(std.math.maxInt(u8));
+    var ranked: [64]u32 = undefined;
+    for (&ranked, 0..) |*token, i| token.* = @intCast(i);
+    for (1..ranked.len) |i| {
+        var j = i;
+        while (j > 0 and serial_p[ranked[j]] > serial_p[ranked[j - 1]]) : (j -= 1) {
+            std.mem.swap(u32, &ranked[j], &ranked[j - 1]);
+        }
+    }
+    var supported: usize = 0;
+    for (ranked) |token| {
+        if (serial_p[token] == 0.0) break;
+        rank[token] = @intCast(supported);
+        supported += 1;
+    }
+    try testing.expect(supported >= 4);
+    try testing.expect(Gate.bucketFor(rank, proposal_token, supported) != null);
+    std.debug.print("dsv4 stochastic distribution preflight: t1={d} proposal={d} support={d} verify_p={d:.4} serial_p={d:.4} serial_all_p={d:.4}\n", .{
+        t1,
+        proposal_token,
+        supported,
+        verify_proposal_p,
+        serial_p[proposal_token],
+        serial_p_all[proposal_token],
+    });
+    dsv4_mod.restoreDecodeState(&mdl.dec_state.?, &entry);
+    gen.ctx.cache.step = entry.n;
+
+    const trials: usize = 2048;
+    var serial_buckets: [4]u32 = @splat(0);
+    var ds_buckets: [4]u32 = @splat(0);
+    var serial_proposal: u32 = 0;
+    var ds_proposal: u32 = 0;
+    var rejects: u32 = 0;
+    var accepts: u32 = 0;
+    for (0..trials) |trial| {
+        // Serial: remove all lazy material before rolling the DSV4 state back;
+        // otherwise the next trial could consume a graph rooted in the prior
+        // state rather than the snapshot being tested.
+        Gate.clearPending(&gen);
+        dsv4_mod.restoreDecodeState(&mdl.dec_state.?, &entry);
+        Gate.resetBookkeeping(&gen, entry.n, t1);
+        try mlx.check(mlx.mlx_random_seed(Gate.seed(@intCast(trial), 0x5352_4c31)));
+        gen.prng = std.Random.DefaultPrng.init(Gate.seed(@intCast(trial), 0x5352_4143));
+        const serial_t1 = (try gen.next(allocator)) orelse return error.TestExpectedResult;
+        try testing.expectEqual(t1, serial_t1);
+        const serial_t2 = (try gen.next(allocator)) orelse return error.TestExpectedResult;
+        const serial_bucket = Gate.bucketFor(rank, serial_t2, supported) orelse return error.TestExpectedResult;
+        serial_buckets[serial_bucket] += 1;
+        if (serial_t2 == proposal_token) serial_proposal += 1;
+
+        // DSpark: MLX sampling gets its own arm+trial stream; acceptance uses
+        // the Generator PRNG, deliberately reset from a separate hash so an
+        // accidental shared/ordered stream is visible to this gate.
+        dsv4_mod.restoreDecodeState(&mdl.dec_state.?, &entry);
+        if (mdl.dec_state.?.anchors) |*anchors| anchors.armed = false;
+        Gate.resetBookkeeping(&gen, entry.n, t1);
+        try mlx.check(mlx.mlx_random_seed(Gate.seed(@intCast(trial), 0x4453_4c31)));
+        gen.prng = std.Random.DefaultPrng.init(Gate.seed(@intCast(trial), 0x4453_4143));
+        const result = (try gen.nextDspark(allocator)) orelse return error.TestExpectedResult;
+        defer allocator.free(result.tokens);
+        try testing.expectEqual(t1, result.tokens[0]);
+        const ds_t2 = if (result.accepted_tokens > 0) blk: {
+            accepts += 1;
+            try testing.expect(result.tokens.len >= 2);
+            try testing.expectEqual(proposal_token, result.tokens[1]);
+            break :blk result.tokens[1];
+        } else blk: {
+            rejects += 1;
+            break :blk gen.next_token_id;
+        };
+        const ds_bucket = Gate.bucketFor(rank, ds_t2, supported) orelse return error.TestExpectedResult;
+        ds_buckets[ds_bucket] += 1;
+        if (ds_t2 == proposal_token) ds_proposal += 1;
+    }
+    Gate.clearPending(&gen);
+    dsv4_mod.restoreDecodeState(&mdl.dec_state.?, &entry);
+    if (mdl.dec_state.?.anchors) |*anchors| anchors.armed = false;
+
+    // The selected proposal must exercise both the correction and accepted
+    // paths; otherwise an always-reject or always-accept bug could hide under
+    // a superficially plausible aggregate distribution.
+    try testing.expect(rejects > 0);
+    try testing.expect(accepts > 0);
+    const proposal_z = Gate.twoSampleZ(serial_proposal, ds_proposal, trials);
+    const rank_homogeneity = Gate.homogeneity(serial_buckets, ds_buckets);
+    std.debug.print(
+        "dsv4 stochastic distribution stats: serial={any} dspark={any} proposal={d}/{d} accepts={d} rejects={d} proposal_z={d:.3} rank_x2={d:.3}\n",
+        .{ serial_buckets, ds_buckets, serial_proposal, ds_proposal, accepts, rejects, proposal_z, rank_homogeneity },
+    );
+    try testing.expect(proposal_z < 5.0);
+    try testing.expect(rank_homogeneity < 25.0);
+
+    // Deterministic negative control: treating a temperature-10 request as
+    // greedy places every output in rank bucket 0. The same statistic must
+    // reject that broken behavior before it can attest the real DSpark arm.
+    var wrong_greedy: [4]u32 = @splat(0);
+    const greedy_bucket = Gate.bucketFor(rank, ranked[0], supported) orelse return error.TestExpectedResult;
+    wrong_greedy[greedy_bucket] = @intCast(trials);
+    const wrong_homogeneity = Gate.homogeneity(serial_buckets, wrong_greedy);
+    try testing.expect(wrong_homogeneity > 25.0);
+    std.debug.print(
+        "dsv4 stochastic distribution: t1={d} proposal={d} support={d} accepts={d} rejects={d} proposal_z={d:.3} rank_x2={d:.3} greedy_x2={d:.3}\n",
+        .{ t1, proposal_token, supported, accepts, rejects, proposal_z, rank_homogeneity, wrong_homogeneity },
+    );
+}

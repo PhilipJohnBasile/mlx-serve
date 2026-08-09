@@ -736,6 +736,17 @@ pub const Dsv4Model = struct {
     /// verification (see `dsparkConfThreshold`). Tests move it to ±inf to pin
     /// the open/shut ends.
     ds_conf_thr: f32 = 0,
+    /// Test-only override for the experimental GPU Markov-ID arm. Per-model
+    /// ownership keeps parallel model tests from changing each other's path.
+    ds_gpu_markov_ids_test: ?bool = null,
+    /// Emit the experimental-path engagement evidence once per model. Draft
+    /// requests may race on the same model, so the first-use latch is atomic.
+    ds_gpu_markov_ids_logged: std.atomic.Value(bool) = .init(false),
+    /// Test-only override for the DSpark joined verify/deferred-row eval.
+    /// Per-model ownership keeps parallel model tests isolated.
+    ds_join_verify_eval_test: ?bool = null,
+    /// One-time, thread-safe engagement evidence for the joined eval arm.
+    ds_join_verify_eval_logged: std.atomic.Value(bool) = .init(false),
     /// Per-round cost audit, armed by `MLX_SERVE_DSPARK_PROFILE` at load.
     ds_prof: ?DsparkProfile = null,
     /// Scratch laps written by the last `extendChunk` (profiling only): the
@@ -3728,19 +3739,37 @@ test "dsv4: DSpark draft matches the oracle (DSV4_MINI)" {
             mdl.ds_conf_thr = -std.math.inf(f32); // gate open — see the header
             const n_before = st.n;
             const ring_before = st.dspark.?.main_kv[0].used;
+            const state_before = fingerprintDecodeState(&st);
 
+            dsparkGpuMarkovIdsSetForTest(&mdl, false);
             var draft = try dsparkDraft(&mdl, allocator, &st, trunk_tok);
             defer draft.deinit(allocator);
 
             // the draft READS the state, never mutates it
             try testing.expectEqual(n_before, st.n);
             try testing.expectEqual(ring_before, st.dspark.?.main_kv[0].used);
+            try testing.expect(std.meta.eql(state_before, fingerprintDecodeState(&st)));
 
             const want_ids = root.get(std.fmt.comptimePrint("dspark.{d}.out_ids", .{i})).?.array.items;
             const want_log = root.get(std.fmt.comptimePrint("dspark.{d}.logits", .{i})).?.array.items;
             const want_conf = root.get(std.fmt.comptimePrint("dspark.{d}.confidence", .{i})).?.array.items;
             try testing.expectEqual(want_ids.len, draft.ids.len);
             try testing.expectEqual(trunk_tok, draft.ids[0]);
+            try testing.expectEqual((draft.ids.len - 1) * mdl.vocab, draft.logits.len);
+
+            if (use_gpu) {
+                dsparkGpuMarkovIdsSetForTest(&mdl, true);
+                const fast_result = dsparkDraft(&mdl, allocator, &st, trunk_tok);
+                dsparkGpuMarkovIdsSetForTest(&mdl, false);
+                var fast = try fast_result;
+                defer fast.deinit(allocator);
+                try testing.expectEqual(@as(usize, 0), fast.logits.len); // fast arm ENGAGED
+                try testing.expectEqual(draft.len, fast.len);
+                try testing.expectEqualSlices(u32, draft.ids, fast.ids);
+                try testing.expectEqualSlices(u8, std.mem.sliceAsBytes(draft.confidence), std.mem.sliceAsBytes(fast.confidence));
+                try testing.expect(std.meta.eql(state_before, fingerprintDecodeState(&st)));
+                for (fast.ids, want_ids) |got, want| try testing.expectEqual(@as(u32, @intCast(want.integer)), got);
+            }
 
             // Strictness ladder: at i=6 (ring pre-window-wrap, minimal state
             // drift) the CPU arm pins the whole pipeline — cos ≥ 0.99, ids
@@ -3884,7 +3913,7 @@ test "dsv4: extendStateAllLogits rows match serial decode at every position (DSV
     }
 }
 
-test "dsv4: extendChunk .all_gpu + host read matches .all_host bytes (DSV4_MINI)" {
+test "dsv4: extendChunk .all_gpu and DSpark joined verify eval match legacy bytes (DSV4_MINI)" {
     testEnableDspark();
     // Pins the mode-enum refactor directly: `.all_host` is `.all_gpu` +
     // toHostF32 by construction (headLogitsBatchGpu wraps headLogitsBatchG),
@@ -3942,6 +3971,65 @@ test "dsv4: extendChunk .all_gpu + host read matches .all_host bytes (DSV4_MINI)
 
         try testing.expectEqualSlices(f32, vl_host, vl_read);
         std.debug.print("dsv4 extendChunk all_gpu==all_host (gpu={}): {d} logits byte-equal\n", .{ use_gpu, vl_host.len });
+
+        if (use_gpu) {
+            // Production routing seam: an explicit false overrides even an
+            // externally enabled env flag (kill switch), while true must
+            // engage the joined barrier. Both runs start from the same
+            // snapshot and must leave byte-identical logits and state.
+            const B = mdl.ds_block;
+            var no_logits: [0]f32 = .{};
+            var no_confidence: [0]f32 = .{};
+            const draft = DsparkDraft{
+                .ids = block[0 .. B + 1],
+                .len = B,
+                .logits = &no_logits,
+                .confidence = &no_confidence,
+            };
+            const Run = struct {
+                logits: []f32,
+                fingerprint: Dsv4StateFingerprint,
+                content_hash: u64,
+            };
+
+            restoreDecodeState(&st, &snap);
+            dsparkJoinedVerifyEvalSetForTest(&mdl, false);
+            const legacy: Run = blk: {
+                var pending = try dsparkBeginWith(&mdl, allocator, &st, block[0], &draft);
+                defer pending.deinit();
+                const logits = try toHostF32(allocator, pending.vl_g, (B + 1) * mdl.vocab, mdl.s);
+                errdefer allocator.free(logits);
+                break :blk .{
+                    .logits = logits,
+                    .fingerprint = fingerprintDecodeState(&st),
+                    .content_hash = try hashDecodeStateContent(&mdl, &st, allocator),
+                };
+            };
+            defer allocator.free(legacy.logits);
+            try testing.expect(!mdl.ds_join_verify_eval_logged.load(.monotonic)); // kill switch stayed legacy
+
+            restoreDecodeState(&st, &snap);
+            dsparkJoinedVerifyEvalSetForTest(&mdl, true);
+            const joined: Run = blk: {
+                var pending = try dsparkBeginWith(&mdl, allocator, &st, block[0], &draft);
+                defer pending.deinit();
+                const logits = try toHostF32(allocator, pending.vl_g, (B + 1) * mdl.vocab, mdl.s);
+                errdefer allocator.free(logits);
+                break :blk .{
+                    .logits = logits,
+                    .fingerprint = fingerprintDecodeState(&st),
+                    .content_hash = try hashDecodeStateContent(&mdl, &st, allocator),
+                };
+            };
+            defer allocator.free(joined.logits);
+            dsparkJoinedVerifyEvalSetForTest(&mdl, null);
+
+            try testing.expect(mdl.ds_join_verify_eval_logged.load(.monotonic)); // joined barrier ENGAGED
+            try testing.expectEqualSlices(f32, legacy.logits, joined.logits);
+            try testing.expect(std.meta.eql(legacy.fingerprint, joined.fingerprint));
+            try testing.expectEqual(legacy.content_hash, joined.content_hash);
+            std.debug.print("dsv4 DSpark joined verify eval: kill switch legacy + opt-in engaged, {d} logits/state exact\n", .{joined.logits.len});
+        }
     }
 }
 
@@ -7545,6 +7633,18 @@ fn pushCompChunk(m: *Dsv4Model, st: *Dsv4DecodeState, li: usize, rows: []const f
     }
 }
 
+/// Host half of the deferred compressor-row drain. The caller has already
+/// realized every `r.arr`; keeping this separate lets the DSpark verify arm
+/// realize those rows together with its final logits without changing any
+/// cache or anchor update below.
+fn pushDeferredCompChunk(m: *Dsv4Model, st: *Dsv4DecodeState, alloc: std.mem.Allocator, rows: []const DeferredCompRow, base: usize, C: usize, fr: *const Freqs) !void {
+    for (rows) |r| {
+        const host = try toHostF32(alloc, r.arr, C * m.hl[r.li].comp_in_w, m.s);
+        defer alloc.free(host);
+        try pushCompChunk(m, st, r.li, host, base, C, fr, alloc);
+    }
+}
+
 /// Drain the layers whose compressor read was deferred: ONE batched eval for
 /// every layer's [C, W] rows, then the same host pushes they would have done
 /// in-layer. The decode sibling is `processDeferredComp`.
@@ -7556,11 +7656,7 @@ fn processDeferredCompChunk(m: *Dsv4Model, st: *Dsv4DecodeState, alloc: std.mem.
     for (rows) |r| _ = mlx.mlx_vector_array_append_value(ev, r.arr);
     try mlx.check(mlx.mlx_eval(ev));
     if (m.ds_prof != null) m.ds_prof_comp_sync_ns += sclk.lap();
-    for (rows) |r| {
-        const host = try toHostF32(alloc, r.arr, C * m.hl[r.li].comp_in_w, m.s);
-        defer alloc.free(host);
-        try pushCompChunk(m, st, r.li, host, base, C, fr, alloc);
-    }
+    try pushDeferredCompChunk(m, st, alloc, rows, base, C, fr);
 }
 
 /// Slice rows [r0, r1) × cols [c0, c1) of a 2-D array.
@@ -9660,16 +9756,41 @@ pub fn extendStateAllLogitsWithTrace(m: *Dsv4Model, gpa: std.mem.Allocator, st: 
     return extendChunk(m, gpa, st, ids, .all_host, trace_call);
 }
 
+/// Exact opt-in for joining DSpark's deferred compressor-row barrier with its
+/// final verify-logits eval. The override exists only for per-model tests;
+/// ordinary callers cannot select the joined extend mode directly.
+fn dsparkJoinedVerifyEvalSetForTest(m: *Dsv4Model, value: ?bool) void {
+    m.ds_join_verify_eval_test = value;
+}
+
+fn dsparkJoinedVerifyEvalEnabled(m: *const Dsv4Model) bool {
+    const env_enabled = if (std.c.getenv("MLX_SERVE_DSPARK_JOIN_VERIFY_EVAL")) |v|
+        std.mem.eql(u8, std.mem.span(v), "1")
+    else
+        false;
+    const enabled = m.ds_join_verify_eval_test orelse env_enabled;
+    return enabled and
+        mlx.streamIsGpu(m.s) and
+        !dsv4TraceEnabled() and
+        std.c.getenv("MLX_SERVE_DSPARK_TRACE") == null and
+        differential_capture == null;
+}
+
 /// What extendChunk hands back. `.last_host`/`.all_host` sync and return
 /// host f32 (last row / every row); `.all_gpu` returns the LAZY `[C, vocab]`
 /// logits array un-synced — the stochastic verify feeds it straight into the
 /// filtered-probs + accept graph so the round pays ONE bounded sync at its
-/// end. `.all_host` is `.all_gpu` + toHostF32 by construction
-/// (headLogitsBatchGpu wraps headLogitsBatchG): same graph, same sync point.
-const ExtendMode = enum { last_host, all_host, all_gpu };
+/// end. `.dspark_all_gpu_joined` is reachable only from the exact DSpark
+/// opt-in above: it returns the same array already realized together with the
+/// deferred compressor rows. `.all_host` is `.all_gpu` + toHostF32 by
+/// construction (headLogitsBatchGpu wraps headLogitsBatchG): same graph.
+const ExtendMode = enum { last_host, all_host, all_gpu, dspark_all_gpu_joined };
 
 fn ExtendRet(comptime mode: ExtendMode) type {
-    return if (mode == .all_gpu) mlx.mlx_array else []f32;
+    return switch (mode) {
+        .all_gpu, .dspark_all_gpu_joined => mlx.mlx_array,
+        .last_host, .all_host => []f32,
+    };
 }
 
 fn extendChunk(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, ids: []const u32, comptime mode: ExtendMode, trace_call: ?*const router_trace_mod.Call) !ExtendRet(mode) {
@@ -9685,7 +9806,7 @@ fn extendChunk(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, ids:
     const base = st.n;
     const C = ids.len;
     const serial_verify_qmm = switch (mode) {
-        .all_host, .all_gpu => true,
+        .all_host, .all_gpu, .dspark_all_gpu_joined => true,
         .last_host => false,
     };
     const cc: c_int = @intCast(C);
@@ -9777,7 +9898,39 @@ fn extendChunk(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, ids:
         }
     }
     const layers_ns: u64 = if (tracing) tclk.lap() else 0;
-    try processDeferredCompChunk(m, st, a, deferred.items, base, C, fr_yarn);
+    // DSpark-only opt-in: the deferred rows and final logits are independent
+    // leaves of the graph above. Build the head before the existing barrier
+    // and realize every leaf in ONE vector eval. The host cache/anchor pushes
+    // remain byte-for-byte the same and happen only after successful eval.
+    // If there are no deferred rows, retain the ordinary lazy-logits path:
+    // evaluating only the head here would merely move the caller's sync.
+    const join_deferred = (comptime mode == .dspark_all_gpu_joined) and deferred.items.len > 0;
+    var joined_out: ?mlx.mlx_array = null;
+    errdefer {
+        if (joined_out) |out| _ = mlx.mlx_array_free(out);
+    }
+    if (join_deferred) {
+        if (m.ds_prof != null) m.ds_prof_layers_ns = chunk_clk.lap();
+        var head_clk: DsparkClock = if (m.ds_prof != null) DsparkClock.init() else undefined;
+        const vl_g = try headLogitsBatchG(m, a, stream_g, C);
+        joined_out = vl_g;
+        // Head stays build-only, matching the legacy lazy arm. Charge the
+        // indivisible joint GPU barrier once to comp-sync, never to both.
+        if (m.ds_prof != null) m.ds_prof_head_ns = head_clk.lap();
+        var sync_clk: DsparkClock = if (m.ds_prof != null) DsparkClock.init() else undefined;
+        const ev = mlx.mlx_vector_array_new();
+        defer _ = mlx.mlx_vector_array_free(ev);
+        try mlx.check(mlx.mlx_vector_array_append_value(ev, vl_g));
+        for (deferred.items) |r| try mlx.check(mlx.mlx_vector_array_append_value(ev, r.arr));
+        try mlx.check(mlx.mlx_eval(ev));
+        if (m.ds_prof != null) m.ds_prof_comp_sync_ns += sync_clk.lap();
+        if (!m.ds_join_verify_eval_logged.swap(true, .monotonic)) {
+            log.info("dsv4: DSpark joined verify/deferred-row eval engaged (one GPU barrier)\n", .{});
+        }
+        try pushDeferredCompChunk(m, st, a, deferred.items, base, C, fr_yarn);
+    } else {
+        try processDeferredCompChunk(m, st, a, deferred.items, base, C, fr_yarn);
+    }
     const defer_ns: u64 = if (tracing) tclk.lap() else 0;
     if (st.dspark != null and mh_parts.items.len > 0) {
         const vec = mlx.mlx_vector_array_new();
@@ -9788,12 +9941,13 @@ fn extendChunk(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, ids:
         try mlx.check(mlx.mlx_concatenate_axis(&mh, vec, 1, m.s));
         try appendDsparkMainKv(m, st, mh, C, &rr_plain, serial_verify_qmm);
     }
-    if (m.ds_prof != null) m.ds_prof_layers_ns = chunk_clk.lap();
-    const out = if (comptime mode == .all_gpu)
+    if (m.ds_prof != null and !join_deferred) m.ds_prof_layers_ns = chunk_clk.lap();
+    const out = if (comptime mode == .all_gpu or mode == .dspark_all_gpu_joined)
         // Lazy: the caller owns the sync, so under profiling the head lap
-        // below measures BUILD only — the eval lands in the caller's
-        // verify lap (DsparkPending.lapVerify).
-        try headLogitsBatchG(m, a, stream_g, C)
+        // below measures BUILD only. The joined arm has already realized the
+        // same handle with the deferred rows; otherwise its eval lands in the
+        // caller's verify lap (DsparkPending.lapVerify).
+        if (joined_out) |ready| ready else try headLogitsBatchG(m, a, stream_g, C)
     else if (comptime mode == .all_host)
         try headLogitsBatchGpu(m, gpa, a, stream_g, C)
     else blk: {
@@ -9809,7 +9963,8 @@ fn extendChunk(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, ids:
         defer _ = mlx.mlx_array_free(last2);
         break :blk try headLogitsGpu(m, gpa, a, last2);
     };
-    if (m.ds_prof != null) m.ds_prof_head_ns = chunk_clk.lap();
+    joined_out = null; // `out` now owns the joined handle on the success path.
+    if (m.ds_prof != null and !join_deferred) m.ds_prof_head_ns = chunk_clk.lap();
     if (tracing) {
         const head_ns = tclk.lap();
         log.info("[dsv4-trace] chunk base={d} C={d} layers={d}ms defer={d}ms head={d}ms comp={d}ms\n", .{
@@ -10016,7 +10171,10 @@ pub const DsparkDraft = struct {
     /// `block` when the confidence gate truncated the block (0 = draft
     /// nothing, i.e. this round verifies the trunk token alone).
     len: usize,
-    logits: []f32, // [block * vocab] Markov-biased logits (row-major; live rows only)
+    /// Markov-biased logits (row-major; live rows only). Empty on the
+    /// GPU-ID fast path: serving only needs `ids`, while trace keeps this
+    /// host diagnostic materialized through the legacy path.
+    logits: []f32,
     confidence: []f32, // [block] logits; positions past `len` are unevaluated
     /// Sequential Markov-loop time (ns) — 0 unless profiling is armed.
     markov_ns: u64 = 0,
@@ -10039,13 +10197,16 @@ pub const DsparkDraft = struct {
 /// One round's measured phases (ns) plus what it bought.
 pub const DsparkPhases = struct {
     draft_ns: u64 = 0,
-    /// Of `draft_ns`: the sequential Markov bigram loop (B host syncs).
+    /// Of `draft_ns`: the sequential Markov bigram loop (legacy: B host
+    /// syncs; GPU-ID arm: one batched typed ID/confidence sync).
     markov_ns: u64 = 0,
     snapshot_ns: u64 = 0,
     verify_ns: u64 = 0,
     /// Of `verify_ns`: the vocab head over all B+1 rows (the M=B+1 lane).
     verify_head_ns: u64 = 0,
-    /// Of `verify_ns`: blocking per-layer compressor-input reads.
+    /// Of `verify_ns`: blocking per-layer compressor-input reads. The joined
+    /// eval arm charges its indivisible logits+compressor barrier here once;
+    /// `verify_head_ns` stays build-only, so the barrier is not double-counted.
     verify_comp_sync_ns: u64 = 0,
     /// Restore + re-extend of the accepted prefix (0 on a full accept).
     rollback_ns: u64 = 0,
@@ -10154,6 +10315,99 @@ const DsparkClock = struct {
 /// [trunk_tok, noise…] → 3 stages (main_x conditioning already in the rings)
 /// → last stage's OWN hc collapse → shared trunk head → sequential Markov
 /// bigram bias + argmax per position → confidence. Never mutates `st`.
+fn dsparkGpuMarkovIdsSetForTest(m: *Dsv4Model, value: ?bool) void {
+    m.ds_gpu_markov_ids_test = value;
+}
+
+fn dsparkGpuMarkovIdsEnabled(m: *const Dsv4Model, ds_trace: bool) bool {
+    // Exact opt-in: do not silently accept other spellings as an experimental
+    // speed path. The host loop remains the diagnostic/reference arm.
+    const env_enabled = if (std.c.getenv("MLX_SERVE_DSPARK_GPU_MARKOV_IDS")) |v|
+        std.mem.eql(u8, std.mem.span(v), "1")
+    else
+        false;
+    const enabled = m.ds_gpu_markov_ids_test orelse env_enabled;
+    return enabled and !ds_trace and mlx.streamIsGpu(m.s) and m.ds_conf_thr == -std.math.inf(f32);
+}
+
+/// MLX argmax has the same first-index tie contract as the host scan except
+/// when the first value is NaN. The reference initializes `best = 0`, so
+/// every comparison with that NaN is false and index zero wins. Keep that
+/// exceptional selector on-device so a Markov token can feed the next gather
+/// without a host read.
+fn gpuArgmaxHostCompatible(row: mlx.mlx_array, s: mlx.mlx_stream, comptime inject_result_error: bool) !mlx.mlx_array {
+    var argmax = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(argmax);
+    try mlx.check(mlx.mlx_argmax_axis(&argmax, row, 1, false, s)); // [1]
+    var argmax_i32 = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(argmax_i32);
+    try mlx.check(mlx.mlx_astype(&argmax_i32, argmax, .int32, s));
+
+    const first_start = [_]c_int{ 0, 0 };
+    const first_stop = [_]c_int{ 1, 1 };
+    const first_stride = [_]c_int{ 1, 1 };
+    var first = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(first);
+    try mlx.check(mlx.mlx_slice(&first, row, &first_start, 2, &first_stop, 2, &first_stride, 2, s)); // [1, 1]
+    const one_shape = [_]c_int{1};
+    var first_flat = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(first_flat);
+    try mlx.check(mlx.mlx_reshape(&first_flat, first, &one_shape, 1, s)); // [1]
+    var first_is_nan = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(first_is_nan);
+    try mlx.check(mlx.mlx_isnan(&first_is_nan, first_flat, s));
+
+    const zero = mlx.mlx_array_new_int(0);
+    defer _ = mlx.mlx_array_free(zero);
+    var selected = mlx.mlx_array_new();
+    errdefer _ = mlx.mlx_array_free(selected);
+    try mlx.check(mlx.mlx_where(&selected, first_is_nan, zero, argmax_i32, s));
+    if (inject_result_error) return error.InjectedHelperFailure;
+    return selected;
+}
+
+/// Markov's bf16 embedding gather widened to the f32 arithmetic used by the
+/// existing bias matmul. `id_arr` stays a `[1]` int32 device value so callers
+/// can chain a selector straight into the next lookup.
+fn dsparkMarkovRow(m: *const Dsv4Model, id_arr: mlx.mlx_array, comptime inject_result_error: bool) !mlx.mlx_array {
+    var w1row = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(w1row);
+    try mlx.check(mlx.mlx_take_axis(&w1row, m.dw.dspark.?.markov_w1, id_arr, 0, m.s)); // [1, rank] bf16
+    var w1f = mlx.mlx_array_new();
+    errdefer _ = mlx.mlx_array_free(w1f);
+    try mlx.check(mlx.mlx_astype(&w1f, w1row, .float32, m.s));
+    if (inject_result_error) return error.InjectedHelperFailure;
+    return w1f;
+}
+
+/// Apply the legacy first-confidence gate after the GPU recurrence's single
+/// typed readback. The output buffers arrive zeroed. A NaN at position zero
+/// makes `conf[0] >= -inf` false, exactly like the legacy pre-head check, so
+/// no draft IDs or later confidence values become visible.
+fn finalizeGpuMarkovDraft(out_ids: []u32, confidence: []f32, ids_g: []const i32, confidence_g: []const f32, threshold: f32) usize {
+    std.debug.assert(out_ids.len == ids_g.len + 1 and confidence.len == confidence_g.len and confidence.len > 0);
+    confidence[0] = confidence_g[0];
+    if (!(confidence[0] >= threshold)) return 0;
+    for (ids_g, 0..) |id, i| {
+        std.debug.assert(id >= 0);
+        out_ids[i + 1] = @intCast(id);
+    }
+    @memcpy(confidence, confidence_g);
+    return ids_g.len;
+}
+
+fn dsparkConfidenceAtGpu(m: *const Dsv4Model, hout: mlx.mlx_array, w1f: mlx.mlx_array, i: usize) !mlx.mlx_array {
+    const start = [_]c_int{ @intCast(i), 0 };
+    const stop = [_]c_int{ @intCast(i + 1), @intCast(m.dim) };
+    const stride = [_]c_int{ 1, 1 };
+    var hrow = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(hrow);
+    try mlx.check(mlx.mlx_slice(&hrow, hout, &start, 2, &stop, 2, &stride, 2, m.s));
+    const hidden = try gpuConcat2(hrow, w1f, 1, m.s); // [1, d+rank]
+    defer _ = mlx.mlx_array_free(hidden);
+    return try gpuOp2(mlx.mlx_matmul, hidden, m.ds_conf_proj_t.?, m.s); // [1, 1]
+}
+
 pub fn dsparkDraft(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, trunk_tok: u32) !DsparkDraft {
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
@@ -10329,7 +10583,11 @@ pub fn dsparkDraft(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, 
     errdefer gpa.free(out_ids);
     @memset(out_ids, 0); // positions past `len` are never drafted
     out_ids[0] = trunk_tok;
-    const logits = try gpa.alloc(f32, B * m.vocab);
+    const gpu_markov_ids = dsparkGpuMarkovIdsEnabled(m, ds_trace);
+    if (gpu_markov_ids and !m.ds_gpu_markov_ids_logged.swap(true, .monotonic)) {
+        log.info("dsv4: DSpark GPU Markov-ID path engaged (one typed ID/confidence eval; draft logits stay on device)\n", .{});
+    }
+    const logits = try gpa.alloc(f32, if (gpu_markov_ids) 0 else B * m.vocab);
     errdefer gpa.free(logits);
     @memset(logits, 0);
     const confidence = try gpa.alloc(f32, B);
@@ -10344,12 +10602,7 @@ pub fn dsparkDraft(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, 
             const idx_val = [_]i32{@intCast(tok)};
             const idx = mlx.mlx_array_new_data(&idx_val, &idx_shape, 1, .int32);
             defer _ = mlx.mlx_array_free(idx);
-            var w1row = mlx.mlx_array_new();
-            defer _ = mlx.mlx_array_free(w1row);
-            try mlx.check(mlx.mlx_take_axis(&w1row, mm.dw.dspark.?.markov_w1, idx, 0, mm.s)); // [1, rank] bf16
-            var w1f = mlx.mlx_array_new();
-            try mlx.check(mlx.mlx_astype(&w1f, w1row, .float32, mm.s));
-            return w1f;
+            return dsparkMarkovRow(mm, idx, false);
         }
     }.f;
 
@@ -10360,15 +10613,7 @@ pub fn dsparkDraft(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, 
     // of a [B, V] matmul plus B verify rows through the trunk.
     const confAt = struct {
         fn f(mm: *Dsv4Model, alloc: std.mem.Allocator, ho: mlx.mlx_array, w1f: mlx.mlx_array, i: usize) !f32 {
-            const start = [_]c_int{ @intCast(i), 0 };
-            const stop = [_]c_int{ @intCast(i + 1), @intCast(mm.dim) };
-            const str = [_]c_int{ 1, 1 };
-            var hrow = mlx.mlx_array_new();
-            defer _ = mlx.mlx_array_free(hrow);
-            try mlx.check(mlx.mlx_slice(&hrow, ho, &start, 2, &stop, 2, &str, 2, mm.s));
-            const hidden = try gpuConcat2(hrow, w1f, 1, mm.s); // [1, d+rank]
-            defer _ = mlx.mlx_array_free(hidden);
-            const conf_g = try gpuOp2(mlx.mlx_matmul, hidden, mm.ds_conf_proj_t.?, mm.s); // [1, 1]
+            const conf_g = try dsparkConfidenceAtGpu(mm, ho, w1f, i);
             defer _ = mlx.mlx_array_free(conf_g);
             const h = try toHostF32(alloc, conf_g, 1, mm.s);
             defer alloc.free(h);
@@ -10377,11 +10622,7 @@ pub fn dsparkDraft(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, 
     }.f;
 
     var submitted: usize = 0;
-    var w1f = try markovRow(m, trunk_tok);
-    defer _ = mlx.mlx_array_free(w1f);
-    confidence[0] = try confAt(m, a, hout, w1f, 0);
-
-    if (confidence[0] >= m.ds_conf_thr) {
+    if (gpu_markov_ids) {
         // norm → SHARED trunk head → [B, V] f32
         const logits_g = blk: {
             const hn = try gpuRms(hout, m.ds_last_norm_g.?, m.eps, m.s);
@@ -10390,13 +10631,30 @@ pub fn dsparkDraft(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, 
         };
         defer _ = mlx.mlx_array_free(logits_g);
 
-        // sequential Markov bigram bias + greedy sample (host loop; each
-        // step's bias matvec runs on GPU, the biased ROW syncs once and
-        // argmax is host). Stops at the first position the confidence head
-        // does not vouch for — everything after it would be verified at full
-        // trunk cost on a draft the model itself doubts.
+        // The open confidence gate cannot truncate this block, so keep the
+        // recurrence lazy: selector output -> next markov_w1 take. The one
+        // typed batch eval below materializes the B ids and B confidence
+        // values together; serving never needs the B full-vocab draft rows.
+        const ids_g = try a.alloc(mlx.mlx_array, B);
+        var ids_n: usize = 0;
+        defer {
+            for (ids_g[0..ids_n]) |id| _ = mlx.mlx_array_free(id);
+        }
+        const confidence_g = try a.alloc(mlx.mlx_array, B);
+        var confidence_n: usize = 0;
+        defer {
+            for (confidence_g[0..confidence_n]) |conf| _ = mlx.mlx_array_free(conf);
+        }
+
+        const first_idx_shape = [_]c_int{1};
+        const first_idx_val = [_]i32{@intCast(trunk_tok)};
+        const first_idx = mlx.mlx_array_new_data(&first_idx_val, &first_idx_shape, 1, .int32);
+        defer _ = mlx.mlx_array_free(first_idx);
+        var w1f = try dsparkMarkovRow(m, first_idx, false);
+        defer _ = mlx.mlx_array_free(w1f);
         for (0..B) |i| {
-            if (confidence[i] < m.ds_conf_thr) break;
+            confidence_g[i] = try dsparkConfidenceAtGpu(m, hout, w1f, i);
+            confidence_n += 1;
             const bias = try gpuOp2(mlx.mlx_matmul, w1f, m.ds_markov_w2_t.?, m.s); // [1, V]
             defer _ = mlx.mlx_array_free(bias);
             const row_start = [_]c_int{ @intCast(i), 0 };
@@ -10407,19 +10665,83 @@ pub fn dsparkDraft(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, 
             try mlx.check(mlx.mlx_slice(&lr, logits_g, &row_start, 2, &row_stop, 2, &row_str, 2, m.s));
             const biased = try gpuOp2(mlx.mlx_add, lr, bias, m.s);
             defer _ = mlx.mlx_array_free(biased);
-            const brow = try toHostF32(a, biased, m.vocab, m.s);
-            defer a.free(brow);
-            @memcpy(logits[i * m.vocab ..][0..m.vocab], brow);
-            var am: usize = 0;
-            for (brow, 0..) |v, j| {
-                if (v > brow[am]) am = j;
-            }
-            out_ids[i + 1] = @intCast(am);
-            submitted = i + 1;
+            ids_g[i] = try gpuArgmaxHostCompatible(biased, m.s, false);
+            ids_n += 1;
             if (i + 1 < B) {
+                const next_w1f = try dsparkMarkovRow(m, ids_g[i], false);
                 _ = mlx.mlx_array_free(w1f);
-                w1f = try markovRow(m, out_ids[i + 1]);
-                confidence[i + 1] = try confAt(m, a, hout, w1f, i + 1);
+                w1f = next_w1f;
+            }
+        }
+        const ids_parts = mlx.mlx_vector_array_new();
+        defer _ = mlx.mlx_vector_array_free(ids_parts);
+        for (ids_g) |id| try mlx.check(mlx.mlx_vector_array_append_value(ids_parts, id));
+        var all_ids = mlx.mlx_array_new();
+        defer _ = mlx.mlx_array_free(all_ids);
+        try mlx.check(mlx.mlx_concatenate_axis(&all_ids, ids_parts, 0, m.s)); // [B]
+
+        const conf_parts = mlx.mlx_vector_array_new();
+        defer _ = mlx.mlx_vector_array_free(conf_parts);
+        for (confidence_g) |conf| try mlx.check(mlx.mlx_vector_array_append_value(conf_parts, conf));
+        var all_conf = mlx.mlx_array_new();
+        defer _ = mlx.mlx_array_free(all_conf);
+        try mlx.check(mlx.mlx_concatenate_axis(&all_conf, conf_parts, 0, m.s)); // [B, 1]
+        const conf_shape = [_]c_int{@intCast(B)};
+        const conf_flat = try gpuReshape(all_conf, &conf_shape, m.s);
+        defer _ = mlx.mlx_array_free(conf_flat);
+        const eval_parts = mlx.mlx_vector_array_new();
+        defer _ = mlx.mlx_vector_array_free(eval_parts);
+        try mlx.check(mlx.mlx_vector_array_append_value(eval_parts, all_ids));
+        try mlx.check(mlx.mlx_vector_array_append_value(eval_parts, conf_flat));
+        try mlx.check(mlx.mlx_eval(eval_parts));
+        const realized_ids = (mlx.mlx_array_data_int32(all_ids) orelse return error.NoData)[0..B];
+        const realized_confidence = (mlx.mlx_array_data_float32(conf_flat) orelse return error.NoData)[0..B];
+        for (realized_ids) |id| std.debug.assert(id >= 0 and @as(usize, @intCast(id)) < m.vocab);
+        submitted = finalizeGpuMarkovDraft(out_ids, confidence, realized_ids, realized_confidence, m.ds_conf_thr);
+    } else {
+        var w1f = try markovRow(m, trunk_tok);
+        defer _ = mlx.mlx_array_free(w1f);
+        confidence[0] = try confAt(m, a, hout, w1f, 0);
+
+        if (confidence[0] >= m.ds_conf_thr) {
+            // sequential Markov bigram bias + greedy sample (host loop; each
+            // step's bias matvec runs on GPU, the biased ROW syncs once and
+            // argmax is host). Stops at the first position the confidence head
+            // does not vouch for — everything after it would be verified at
+            // full trunk cost on a draft the model itself doubts.
+            const logits_g = blk: {
+                const hn = try gpuRms(hout, m.ds_last_norm_g.?, m.eps, m.s);
+                defer _ = mlx.mlx_array_free(hn);
+                break :blk try gpuQmmB(&m.dw.head, hn, m.s);
+            };
+            defer _ = mlx.mlx_array_free(logits_g);
+            for (0..B) |i| {
+                if (confidence[i] < m.ds_conf_thr) break;
+                const bias = try gpuOp2(mlx.mlx_matmul, w1f, m.ds_markov_w2_t.?, m.s); // [1, V]
+                defer _ = mlx.mlx_array_free(bias);
+                const row_start = [_]c_int{ @intCast(i), 0 };
+                const row_stop = [_]c_int{ @intCast(i + 1), @intCast(m.vocab) };
+                const row_str = [_]c_int{ 1, 1 };
+                var lr = mlx.mlx_array_new();
+                defer _ = mlx.mlx_array_free(lr);
+                try mlx.check(mlx.mlx_slice(&lr, logits_g, &row_start, 2, &row_stop, 2, &row_str, 2, m.s));
+                const biased = try gpuOp2(mlx.mlx_add, lr, bias, m.s);
+                defer _ = mlx.mlx_array_free(biased);
+                const brow = try toHostF32(a, biased, m.vocab, m.s);
+                defer a.free(brow);
+                @memcpy(logits[i * m.vocab ..][0..m.vocab], brow);
+                var am: usize = 0;
+                for (brow, 0..) |v, j| {
+                    if (v > brow[am]) am = j;
+                }
+                out_ids[i + 1] = @intCast(am);
+                submitted = i + 1;
+                if (i + 1 < B) {
+                    const next_w1f = try markovRow(m, out_ids[i + 1]);
+                    _ = mlx.mlx_array_free(w1f);
+                    w1f = next_w1f;
+                    confidence[i + 1] = try confAt(m, a, hout, w1f, i + 1);
+                }
             }
         }
     }
@@ -10537,14 +10859,14 @@ test "dsv4: dspark commit plan caps before finish" {
 
 /// An in-flight round between `dsparkBegin`/`dsparkBeginWith` and
 /// `dsparkFinish`: the draft ran, the state snapshot + anchors are armed,
-/// the verify block was appended to `st`, and `vl_g` holds the LAZY
-/// `[b+1, vocab]` verify logits — un-synced, so the caller can build its
-/// accept decision (host argmax read, or the stochastic filtered-probs +
-/// accept graph) on top and pay ONE bounded sync. The caller always
-/// `deinit`s (finish borrows the snapshot for rollback, it does not free).
+/// the verify block was appended to `st`, and `vl_g` holds `[b+1, vocab]`
+/// verify logits. It is lazy by default so the caller owns the bounded sync;
+/// the exact joined-eval opt-in returns the same handle already realized with
+/// the deferred compressor rows. The caller always `deinit`s (finish borrows
+/// the snapshot for rollback, it does not free).
 pub const DsparkPending = struct {
     snap: Dsv4Snapshot,
-    /// Lazy `[b+1, vocab]` verify logits (every position, trunk head).
+    /// `[b+1, vocab]` verify logits (lazy by default, realized on joined eval).
     vl_g: mlx.mlx_array,
     /// Drafts submitted this round (≤ ds_block; the confidence gate may
     /// have truncated the block, possibly to 0).
@@ -10557,10 +10879,11 @@ pub const DsparkPending = struct {
     prof_on: bool,
     serial_verify: bool = false,
 
-    /// Called by the consumer right after ITS host sync of `vl_g`'s graph —
-    /// the honest place for the verify lap now that begin returns lazy.
-    /// `verify_head_ns` is build-only under the split (the head eval lands
-    /// in this lap); `verify_ns` still covers the whole verify as before.
+    /// Called by the consumer right after its host read of `vl_g`. That read
+    /// owns the graph sync on the legacy lazy arm and is a realized-array read
+    /// on the joined arm. `verify_ns` covers the whole verify either way;
+    /// `verify_head_ns` stays build-only and a joined barrier is charged once
+    /// to `verify_comp_sync_ns`.
     pub fn lapVerify(self: *DsparkPending, m: *const Dsv4Model) void {
         if (!self.prof_on) return;
         self.phases.verify_ns = self.clk.lap();
@@ -10644,7 +10967,10 @@ pub fn dsparkBeginWith(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeSta
         gpa.free(logits);
         return .{ .snap = snap, .vl_g = vl_g, .b = B, .verify = verify, .phases = ph, .clk = clk, .prof_on = prof_on, .serial_verify = true };
     }
-    const vl_g = try extendChunk(m, gpa, st, verify[0 .. B + 1], .all_gpu, null);
+    const vl_g = if (dsparkJoinedVerifyEvalEnabled(m))
+        try extendChunk(m, gpa, st, verify[0 .. B + 1], .dspark_all_gpu_joined, null)
+    else
+        try extendChunk(m, gpa, st, verify[0 .. B + 1], .all_gpu, null);
     return .{ .snap = snap, .vl_g = vl_g, .b = B, .verify = verify, .phases = ph, .clk = clk, .prof_on = prof_on };
 }
 
@@ -10947,6 +11273,165 @@ test "dsv4: GPU QAT sims match the host golden helpers" {
             }
         }
     }
+}
+
+test "dsv4: GPU Markov argmax selector matches host strict scan" {
+    if (mlx.noGpuBackend()) return;
+    const s = mlx.gpuStream();
+    defer _ = mlx.mlx_stream_free(s);
+
+    const check = struct {
+        fn f(values: []const f32, stream: mlx.mlx_stream) !void {
+            var host_best: usize = 0;
+            for (values, 0..) |value, i| {
+                if (value > values[host_best]) host_best = i;
+            }
+            const shape = [_]c_int{ 1, @intCast(values.len) };
+            const row = mlx.mlx_array_new_data(values.ptr, &shape, 2, .float32);
+            defer _ = mlx.mlx_array_free(row);
+            const got = try gpuArgmaxHostCompatible(row, stream, false);
+            defer _ = mlx.mlx_array_free(got);
+            try mlx.check(mlx.mlx_array_eval(got));
+            const ptr = mlx.mlx_array_data_int32(got) orelse return error.NoData;
+            try testing.expectEqual(@as(i32, @intCast(host_best)), ptr[0]);
+        }
+    }.f;
+
+    const neg_zero: f32 = @bitCast(@as(u32, 0x8000_0000));
+    const nan: f32 = @bitCast(@as(u32, 0x7fc0_0000));
+    try check(&.{ 4.0, 4.0, 4.0, 4.0 }, s); // all-equal → first index
+    try check(&.{ neg_zero, 0.0, neg_zero }, s); // signed zero ties
+    try check(&.{ -std.math.inf(f32), std.math.inf(f32), std.math.inf(f32), 0.0 }, s);
+    try check(&.{ nan, 9.0, 10.0 }, s); // first NaN pins host scan at zero
+    try check(&.{ 1.0, nan, 2.0 }, s); // later NaN does not reset the scan
+    try check(&.{ nan, nan, nan }, s); // all-NaN still selects zero
+
+    // Exercise the Metal reduction's boundary lanes at real DSV4 vocabulary
+    // width, including a unique final element.
+    const vocab: usize = 129_280;
+    const large = try testing.allocator.alloc(f32, vocab);
+    defer testing.allocator.free(large);
+    @memset(large, -1.0);
+    large[31] = 3.0;
+    large[32] = 3.0;
+    try check(large, s);
+    @memset(large, -1.0);
+    large[255] = 3.0;
+    large[256] = 3.0;
+    try check(large, s);
+    @memset(large, -1.0);
+    large[1023] = 3.0;
+    large[1024] = 3.0;
+    try check(large, s);
+    @memset(large, -1.0);
+    large[vocab - 1] = 3.0;
+    try check(large, s);
+
+    const error_row_host = [_]f32{ 0.0, 1.0 };
+    const error_row = mlx.mlx_array_new_data(&error_row_host, &[_]c_int{ 1, 2 }, 2, .float32);
+    defer _ = mlx.mlx_array_free(error_row);
+    try testing.expectError(error.InjectedHelperFailure, gpuArgmaxHostCompatible(error_row, s, true));
+
+    const table_host = [_]f32{ 0.0, 1.0 };
+    const table = mlx.mlx_array_new_data(&table_host, &[_]c_int{ 2, 1 }, 2, .float32);
+    defer _ = mlx.mlx_array_free(table);
+    const row_id_host = [_]i32{1};
+    const row_id = mlx.mlx_array_new_data(&row_id_host, &[_]c_int{1}, 1, .int32);
+    defer _ = mlx.mlx_array_free(row_id);
+    var dspark_w: DsparkW = undefined;
+    dspark_w.markov_w1 = table;
+    var weights: Dsv4Weights = undefined;
+    weights.dspark = dspark_w;
+    var fake_model: Dsv4Model = undefined;
+    fake_model.dw = weights;
+    fake_model.s = s;
+    try testing.expectError(error.InjectedHelperFailure, dsparkMarkovRow(&fake_model, row_id, true));
+}
+
+test "dsv4: GPU Markov finalizer preserves the first-confidence NaN gate" {
+    const nan: f32 = @bitCast(@as(u32, 0x7fc0_0000));
+    var out_ids = [_]u32{ 17, 0, 0, 0 };
+    var confidence = [_]f32{ 0, 0, 0 };
+    const realized_ids = [_]i32{ 4, 5, 6 };
+    const realized_confidence = [_]f32{ nan, 2.0, 3.0 };
+    const len = finalizeGpuMarkovDraft(&out_ids, &confidence, &realized_ids, &realized_confidence, -std.math.inf(f32));
+    try testing.expectEqual(@as(usize, 0), len);
+    try testing.expectEqualSlices(u32, &.{ 17, 0, 0, 0 }, &out_ids);
+    try testing.expect(std.math.isNan(confidence[0]));
+    try testing.expectEqualSlices(f32, &.{ 0, 0 }, confidence[1..]);
+
+    @memset(out_ids[1..], 0);
+    @memset(&confidence, 0);
+    const finite_confidence = [_]f32{ -1.0, 2.0, 3.0 };
+    const full_len = finalizeGpuMarkovDraft(&out_ids, &confidence, &realized_ids, &finite_confidence, -std.math.inf(f32));
+    try testing.expectEqual(@as(usize, 3), full_len);
+    try testing.expectEqualSlices(u32, &.{ 17, 4, 5, 6 }, &out_ids);
+    try testing.expectEqualSlices(f32, &finite_confidence, &confidence);
+}
+
+test "dsv4: GPU Markov selector feeds the next take lazily" {
+    if (mlx.noGpuBackend()) return;
+    const s = mlx.gpuStream();
+    defer _ = mlx.mlx_stream_free(s);
+
+    // id 1 → 3, then the selector's device output is the index for the next
+    // w1 take: id 3 plus row 1's base logits → 0, and id 0 keeps row 2 at 0.
+    const B: usize = 3;
+    const vocab: usize = 4;
+    const w1_host = [_]f32{ 0.0, 1.0, 1.0, 1.0 };
+    const w2_host = [_]f32{ 0.0, 1.0, 2.0, 3.0 };
+    const logits_host = [_]f32{
+        0.0, 0.0, 0.0, 0.0,
+        4.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0,
+    };
+    const w1 = mlx.mlx_array_new_data(&w1_host, &[_]c_int{ @intCast(vocab), 1 }, 2, .float32);
+    defer _ = mlx.mlx_array_free(w1);
+    const w2 = mlx.mlx_array_new_data(&w2_host, &[_]c_int{ 1, @intCast(vocab) }, 2, .float32);
+    defer _ = mlx.mlx_array_free(w2);
+    const logits = mlx.mlx_array_new_data(&logits_host, &[_]c_int{ @intCast(B), @intCast(vocab) }, 2, .float32);
+    defer _ = mlx.mlx_array_free(logits);
+    const first_id = [_]i32{1};
+    const first = mlx.mlx_array_new_data(&first_id, &[_]c_int{1}, 1, .int32);
+    defer _ = mlx.mlx_array_free(first);
+
+    var w1_row = mlx.mlx_array_new();
+    try mlx.check(mlx.mlx_take_axis(&w1_row, w1, first, 0, s));
+    defer _ = mlx.mlx_array_free(w1_row);
+    var ids: [B]mlx.mlx_array = undefined;
+    var ids_n: usize = 0;
+    defer {
+        for (ids[0..ids_n]) |id| _ = mlx.mlx_array_free(id);
+    }
+    for (0..B) |i| {
+        const bias = try gpuOp2(mlx.mlx_matmul, w1_row, w2, s);
+        defer _ = mlx.mlx_array_free(bias);
+        const start = [_]c_int{ @intCast(i), 0 };
+        const stop = [_]c_int{ @intCast(i + 1), @intCast(vocab) };
+        const stride = [_]c_int{ 1, 1 };
+        var row = mlx.mlx_array_new();
+        defer _ = mlx.mlx_array_free(row);
+        try mlx.check(mlx.mlx_slice(&row, logits, &start, 2, &stop, 2, &stride, 2, s));
+        const biased = try gpuOp2(mlx.mlx_add, row, bias, s);
+        defer _ = mlx.mlx_array_free(biased);
+        ids[i] = try gpuArgmaxHostCompatible(biased, s, false);
+        ids_n += 1;
+        if (i + 1 < B) {
+            var next_w1_row = mlx.mlx_array_new();
+            try mlx.check(mlx.mlx_take_axis(&next_w1_row, w1, ids[i], 0, s));
+            _ = mlx.mlx_array_free(w1_row);
+            w1_row = next_w1_row;
+        }
+    }
+    const parts = mlx.mlx_vector_array_new();
+    defer _ = mlx.mlx_vector_array_free(parts);
+    for (ids) |id| try mlx.check(mlx.mlx_vector_array_append_value(parts, id));
+    var all_ids = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(all_ids);
+    try mlx.check(mlx.mlx_concatenate_axis(&all_ids, parts, 0, s));
+    try mlx.check(mlx.mlx_array_eval(all_ids)); // first host-visible result
+    const got = mlx.mlx_array_data_int32(all_ids) orelse return error.NoData;
+    try testing.expectEqualSlices(i32, &.{ 3, 0, 0 }, got[0..B]);
 }
 
 test "dsv4: routeGpu matches host routeToken (scored + hash)" {
@@ -12486,6 +12971,10 @@ test "dsv4: serial-equivalence lanes for unquantized DSpark (env-gated)" {
     }
     try testing.expect(ids_list.items.len > 1);
     const ids = ids_list.items;
+    const env_gpu_markov_ids = if (std.c.getenv("MLX_SERVE_DSPARK_GPU_MARKOV_IDS")) |v|
+        std.mem.eql(u8, std.mem.span(v), "1")
+    else
+        false;
 
     const Ops = struct {
         fn argmax(values: []const f32) u32 {
@@ -12577,7 +13066,24 @@ test "dsv4: serial-equivalence lanes for unquantized DSpark (env-gated)" {
         allocator.free(lane_d.pre_logits);
         deinitDecodeState(&lane_d.st);
     }
-    var draft_d = try dsparkDraft(&mdl, allocator, &lane_d.st, lane_d.t1);
+    const draft_state_before = fingerprintDecodeState(&lane_d.st);
+    var draft_d = blk: {
+        dsparkGpuMarkovIdsSetForTest(&mdl, false);
+        var legacy = try dsparkDraft(&mdl, allocator, &lane_d.st, lane_d.t1);
+        defer legacy.deinit(allocator);
+        try testing.expect(std.meta.eql(draft_state_before, fingerprintDecodeState(&lane_d.st)));
+        dsparkGpuMarkovIdsSetForTest(&mdl, true);
+        const fast_result = dsparkDraft(&mdl, allocator, &lane_d.st, lane_d.t1);
+        dsparkGpuMarkovIdsSetForTest(&mdl, null);
+        var fast = try fast_result;
+        errdefer fast.deinit(allocator);
+        try testing.expectEqual(@as(usize, 0), fast.logits.len); // real-model fast arm ENGAGED
+        try testing.expectEqual(legacy.len, fast.len);
+        try testing.expectEqualSlices(u32, legacy.ids, fast.ids);
+        try testing.expectEqualSlices(u8, std.mem.sliceAsBytes(legacy.confidence), std.mem.sliceAsBytes(fast.confidence));
+        try testing.expect(std.meta.eql(draft_state_before, fingerprintDecodeState(&lane_d.st)));
+        break :blk fast;
+    };
     var pending_d = try dsparkBeginWith(&mdl, allocator, &lane_d.st, lane_d.t1, &draft_d);
     restoreDecodeState(&lane_d.st, &pending_d.snap);
     pending_d.deinit();
@@ -12594,7 +13100,12 @@ test "dsv4: serial-equivalence lanes for unquantized DSpark (env-gated)" {
         allocator.free(lane_e.pre_logits);
         deinitDecodeState(&lane_e.st);
     }
+    if (env_gpu_markov_ids) mdl.ds_gpu_markov_ids_logged.store(false, .monotonic);
     var draft_e = try dsparkDraft(&mdl, allocator, &lane_e.st, lane_e.t1);
+    if (env_gpu_markov_ids) {
+        try testing.expectEqual(@as(usize, 0), draft_e.logits.len); // env-selected real-model arm ENGAGED
+        try testing.expect(mdl.ds_gpu_markov_ids_logged.load(.monotonic));
+    }
     var pending_e = try dsparkBeginWith(&mdl, allocator, &lane_e.st, lane_e.t1, &draft_e);
     const verify_e = try toHostF32(allocator, pending_e.vl_g, mdl.vocab, mdl.s);
     defer allocator.free(verify_e);
