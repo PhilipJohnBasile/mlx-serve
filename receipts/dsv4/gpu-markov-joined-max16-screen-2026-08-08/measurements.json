@@ -1,0 +1,98 @@
+[
+  {
+    "arm": "S",
+    "boot_id": "boot-00-S",
+    "metrics_histogram_delta": {
+      "available": true,
+      "histograms": {
+        "decode_time_seconds": {
+          "count": 1,
+          "sum_seconds": 65.458221541
+        },
+        "time_to_first_token_seconds": {
+          "count": 1,
+          "sum_seconds": 6.278513
+        }
+      }
+    },
+    "output_contract": {
+      "completion_tokens": 16,
+      "content": "Here are four concise, actionable improvements for speculative decoding that preserve exact greedy-token",
+      "finish_reason": "length"
+    },
+    "output_contract_sha256": "1ce33223d6fbc79006db676899d687d28270b28dcfa6c1644d3b1597b7ad8a90",
+    "raw": {
+      "metrics_after": "receipts/dsv4/gpu-markov-joined-max16-screen-2026-08-08/boots/boot-00-S/raw/measured-00.metrics-after.json",
+      "metrics_before": "receipts/dsv4/gpu-markov-joined-max16-screen-2026-08-08/boots/boot-00-S/raw/measured-00.metrics-before.json",
+      "response": "receipts/dsv4/gpu-markov-joined-max16-screen-2026-08-08/boots/boot-00-S/raw/measured-00.response.json"
+    },
+    "request_id": "measured-00",
+    "timings": {
+      "cached_n": 0,
+      "predicted_ms": 65460.814,
+      "predicted_n": 16,
+      "predicted_per_second": 0.244,
+      "prompt_ms": 6278.507,
+      "prompt_n": 50,
+      "prompt_per_second": 7.964,
+      "tokenize_ms": 0.339
+    },
+    "usage": {
+      "completion_tokens": 16,
+      "prompt_tokens": 50,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "total_tokens": 66
+    },
+    "wall_seconds": 71.740453709
+  },
+  {
+    "arm": "J",
+    "boot_id": "boot-01-J",
+    "metrics_histogram_delta": {
+      "available": true,
+      "histograms": {
+        "decode_time_seconds": {
+          "count": 1,
+          "sum_seconds": 196.726807585
+        },
+        "time_to_first_token_seconds": {
+          "count": 1,
+          "sum_seconds": 31.084286415999998
+        }
+      }
+    },
+    "output_contract": {
+      "completion_tokens": 16,
+      "content": "Here are four concise, actionable improvements for speculative decoding that preserve exact greedy-token",
+      "finish_reason": "length"
+    },
+    "output_contract_sha256": "1ce33223d6fbc79006db676899d687d28270b28dcfa6c1644d3b1597b7ad8a90",
+    "raw": {
+      "metrics_after": "receipts/dsv4/gpu-markov-joined-max16-screen-2026-08-08/boots/boot-01-J/raw/measured-00.metrics-after.json",
+      "metrics_before": "receipts/dsv4/gpu-markov-joined-max16-screen-2026-08-08/boots/boot-01-J/raw/measured-00.metrics-before.json",
+      "response": "receipts/dsv4/gpu-markov-joined-max16-screen-2026-08-08/boots/boot-01-J/raw/measured-00.response.json"
+    },
+    "request_id": "measured-00",
+    "timings": {
+      "cached_n": 0,
+      "predicted_ms": 226562.724,
+      "predicted_n": 16,
+      "predicted_per_second": 0.071,
+      "prompt_ms": 31084.282,
+      "prompt_n": 50,
+      "prompt_per_second": 1.609,
+      "tokenize_ms": 0.453
+    },
+    "usage": {
+      "completion_tokens": 16,
+      "prompt_tokens": 50,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "total_tokens": 66
+    },
+    "wall_seconds": 257.6480785
+  }
+]

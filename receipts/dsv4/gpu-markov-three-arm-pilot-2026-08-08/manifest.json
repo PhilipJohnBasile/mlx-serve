@@ -1,0 +1,62 @@
+{
+  "binary": {
+    "path": "/Users/pjb/git/mlx-serve/zig-out/bin/mlx-serve",
+    "sha256": "83faae19f58cfc273dd29605426fafb2ef59540801d964a903248c27970ab861"
+  },
+  "common_conservative_mlx_serve_env": {
+    "MLX_SERVE_DSV4_DEC_CHAIN": "0",
+    "MLX_SERVE_DSV4_LAZY_DECODE": "0",
+    "MLX_SERVE_DSV4_MOE_ROUTE_GPU": "0"
+  },
+  "common_server_argv": [
+    "--model",
+    "/private/tmp/dspark-lite-A",
+    "--serve",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "24137",
+    "--ctx-size",
+    "12288",
+    "--timeout",
+    "0",
+    "--no-pld",
+    "--kv-quant",
+    "off",
+    "--no-decode-attn-quant",
+    "--prefix-cache-entries",
+    "0",
+    "--prefix-cache-mem",
+    "0",
+    "--prefix-cache-disk",
+    "0",
+    "--tokenize-cache-entries",
+    "0",
+    "--skip-mem-preflight",
+    "--metrics"
+  ],
+  "harness": "/Users/pjb/git/mlx-serve/tests/bench_dsv4_dspark_gpu_markov.py",
+  "measured_requests_per_boot": 1,
+  "mode": "pilot",
+  "model": {
+    "config_file_sha256": {
+      "config.json": "edebdb2537a0871ca3f15bcc7eed5a24369e157be2c898c15459eb1f196c124a",
+      "generation_config.json": "d14db17fca8dc5492af88fd7938475e3a9fdddddd7596a5062d2ecd58abb942b",
+      "model.safetensors.index.json": "21d6b4216847f143429b46573aaab1e6e21c17dad8f9870115d0405e4593435d",
+      "tokenizer.json": "8f9f37ca37fdc4f5fd36d5cf4d3b0e8392edb4e894fd10cc0d70b4957c8633cf",
+      "tokenizer_config.json": "58a9fb7a7e68144c0b6fe4bc8349ee77d818702f95c9c6aa41143d9e27d7c2e6"
+    },
+    "entry_count": 51,
+    "hash_mode": "metadata",
+    "path": "/private/tmp/dspark-lite-A",
+    "tree_manifest_sha256": "8b699721b4e8733ea9fd79bc8a9b6507dc20aeb9404c86ce5219a5e8c2cc2db0"
+  },
+  "orders": [
+    "SLG"
+  ],
+  "prompt_characters": 257,
+  "prompt_sha256": "ce3894cd79412600c017961c75ab2eadafd456ba9500ea9fa3a2e7bd031666c5",
+  "sanitization": "all inherited MLX_SERVE_* variables removed before each boot",
+  "started_local": "2026-08-08-223814",
+  "warmups_excluded_per_boot": 1
+}

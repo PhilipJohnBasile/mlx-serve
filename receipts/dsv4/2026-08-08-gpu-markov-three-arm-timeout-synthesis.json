@@ -1,0 +1,251 @@
+{
+  "schema": "mlx-serve.dsv4.gpu-markov-timeout-synthesis.v1",
+  "status": {
+    "three_arm_speed_result": "inconclusive",
+    "cross_arm_exact_output_gate": "not_run",
+    "reason": "Only S completed its excluded-warmup-plus-measured protocol. L and G timed out during their excluded warmups, before a measured response, metrics delta, or output hash could be captured."
+  },
+  "source_receipts": {
+    "pilot": {
+      "path": "receipts/dsv4/gpu-markov-three-arm-pilot-2026-08-08",
+      "manifest_sha256": "e7a7b405879ecf8b776c415f316ec6d2c46b36865282598b7e2ccaaecbd55fa2",
+      "failure": "TimeoutError: timed out",
+      "completed_boots": 1
+    },
+    "gpu_recovery": {
+      "path": "receipts/dsv4/gpu-markov-g-recovery-2026-08-08",
+      "manifest_sha256": "5fb86604320fee29697aee80aaaf5ad26277e67e05a6e984b1631f3b159e0280",
+      "failure": "TimeoutError: timed out",
+      "completed_boots": 0,
+      "comparison_receipt_manifest_sha256": "e7a7b405879ecf8b776c415f316ec6d2c46b36865282598b7e2ccaaecbd55fa2"
+    }
+  },
+  "artifact_identity": {
+    "binary": {
+      "path": "/Users/pjb/git/mlx-serve/zig-out/bin/mlx-serve",
+      "sha256": "83faae19f58cfc273dd29605426fafb2ef59540801d964a903248c27970ab861"
+    },
+    "harness_script": {
+      "path": "/Users/pjb/git/mlx-serve/tests/bench_dsv4_dspark_gpu_markov.py",
+      "sha256_at_synthesis": "dfb18d4ad782b6cfe6630bbccb358d444ff51e4b9b098c8ff86e72ad88275079",
+      "run_time_hash_capture": "not present in either original raw manifest; this exact current-script hash is provenance for the synthesis, not a claim that the pre-recovery S run used this later recovery-capable revision"
+    },
+    "model_manifest_identity": {
+      "path": "/private/tmp/dspark-lite-A",
+      "hash_mode": "metadata",
+      "tree_manifest_sha256": "8b699721b4e8733ea9fd79bc8a9b6507dc20aeb9404c86ce5219a5e8c2cc2db0",
+      "entry_count": 51,
+      "config_file_sha256": {
+        "config.json": "edebdb2537a0871ca3f15bcc7eed5a24369e157be2c898c15459eb1f196c124a",
+        "generation_config.json": "d14db17fca8dc5492af88fd7938475e3a9fdddddd7596a5062d2ecd58abb942b",
+        "model.safetensors.index.json": "21d6b4216847f143429b46573aaab1e6e21c17dad8f9870115d0405e4593435d",
+        "tokenizer.json": "8f9f37ca37fdc4f5fd36d5cf4d3b0e8392edb4e894fd10cc0d70b4957c8633cf",
+        "tokenizer_config.json": "58a9fb7a7e68144c0b6fe4bc8349ee77d818702f95c9c6aa41143d9e27d7c2e6"
+      }
+    }
+  },
+  "common_contract": {
+    "prompt_sha256": "ce3894cd79412600c017961c75ab2eadafd456ba9500ea9fa3a2e7bd031666c5",
+    "prompt_characters": 257,
+    "sampling": {
+      "temperature": 0,
+      "top_p": 1,
+      "max_tokens": 64,
+      "stream": false,
+      "enable_pld": false,
+      "enable_drafter": false
+    },
+    "protocol": {
+      "warmups_excluded_per_fresh_boot": 1,
+      "requested_measured_per_boot": 1,
+      "request_timeout_seconds": 900,
+      "server_boots_serial": true
+    },
+    "inherited_mlx_serve_environment": "all MLX_SERVE_* variables were removed; each raw launch recorded an empty removed-key list",
+    "common_mlx_serve_environment": {
+      "MLX_SERVE_DSV4_DEC_CHAIN": "0",
+      "MLX_SERVE_DSV4_LAZY_DECODE": "0",
+      "MLX_SERVE_DSV4_MOE_ROUTE_GPU": "0"
+    },
+    "argv_template_with_arm_specific_port": [
+      "--model",
+      "/private/tmp/dspark-lite-A",
+      "--serve",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "<unique-loopback-port>",
+      "--ctx-size",
+      "12288",
+      "--timeout",
+      "0",
+      "--no-pld",
+      "--kv-quant",
+      "off",
+      "--no-decode-attn-quant",
+      "--prefix-cache-entries",
+      "0",
+      "--prefix-cache-mem",
+      "0",
+      "--prefix-cache-disk",
+      "0",
+      "--tokenize-cache-entries",
+      "0",
+      "--skip-mem-preflight",
+      "--metrics"
+    ],
+    "arm_deltas": {
+      "S": {
+        "extra_argv": [],
+        "extra_mlx_serve_environment": {},
+        "enable_mtp": false
+      },
+      "L": {
+        "extra_argv": [
+          "--dspark"
+        ],
+        "extra_mlx_serve_environment": {},
+        "enable_mtp": true
+      },
+      "G": {
+        "extra_argv": [
+          "--dspark"
+        ],
+        "extra_mlx_serve_environment": {
+          "MLX_SERVE_DSPARK_GPU_MARKOV_IDS": "1"
+        },
+        "enable_mtp": true
+      }
+    }
+  },
+  "arms": {
+    "S": {
+      "name": "plain_serial",
+      "raw_launch": {
+        "path": "receipts/dsv4/gpu-markov-three-arm-pilot-2026-08-08/boots/boot-00-S/launch.json",
+        "sha256": "8aef1130957f9679b857788505ad5b8728dc6935f2c97ae12cb4f44978443efd",
+        "port": 24137,
+        "pid": 36138
+      },
+      "outcome": "completed_measured_request",
+      "engagement": {
+        "spec_stats_count": 0,
+        "gpu_markov_marker_count": 0
+      },
+      "measured_request": {
+        "raw_response_sha256": "71495dc76a1d5b7d07c5bea7ddaeb2f00f2da458bc345b261a033643fa26f6f1",
+        "output_contract_sha256": "e7e43ff600c5e6720b143c17bf393a699d42e12c32153aaab143c1c213867342",
+        "finish_reason": "length",
+        "completion_tokens": 64,
+        "prompt_tokens": 50,
+        "cached_prompt_tokens": 0,
+        "wall_seconds": 83.905101167,
+        "timings": {
+          "prompt_ms": 4015.242,
+          "predicted_ms": 79888.809,
+          "predicted_n": 64,
+          "predicted_per_second": 0.801,
+          "tokenize_ms": 0.362
+        },
+        "metrics_histogram_delta": {
+          "ttft_seconds_sum": 4.015249625,
+          "ttft_count": 1,
+          "decode_seconds_sum": 79.87919079000002,
+          "decode_count": 1
+        },
+        "derived": {
+          "wall_tokens_per_second": 0.762766495837,
+          "metrics_decode_tokens_per_second": 0.801209919217,
+          "interpretation": "one completed measurement; the response's reported decode rate rounds to 0.801 tok/s"
+        }
+      }
+    },
+    "L": {
+      "name": "legacy_dspark",
+      "raw_launch": {
+        "path": "receipts/dsv4/gpu-markov-three-arm-pilot-2026-08-08/boots/boot-01-L/launch.json",
+        "sha256": "ef85992b9001f871c34f74052c9d6b0d20d3802668e0e3f9dc13d9d7e4133937",
+        "port": 24138,
+        "pid": 36529
+      },
+      "outcome": "excluded_warmup_http_timeout_before_measured_request",
+      "client_error": "TimeoutError: timed out",
+      "engagement": {
+        "spec_stats_count": 1,
+        "gpu_markov_marker_count": 0,
+        "server_log_spec_stats": {
+          "attempts": 20,
+          "accepted_tokens": 36,
+          "average_accepted_per_round": 1.8
+        }
+      },
+      "server_log_after_client_timeout": {
+        "logged_emitted_tokens": 55,
+        "max_tokens_requested": 64,
+        "logged_elapsed_ms": 900981,
+        "logged_finish_label": "length",
+        "finish_label_interpretation": "cancellation-accounting artifact: the 900-second client timeout triggered SIGTERM before the inference thread published a cancelled reason",
+        "server_log_sha256": "ceb5da1fecdbe1f7b173ccf63c623b47782dec7e2f40eeadfe8f5118e0f44097"
+      },
+      "derived_partial_diagnostic": {
+        "observed_tokens_divided_by_server_logged_elapsed_tokens_per_second": 0.061044572527,
+        "observed_fraction_of_requested_token_cap": 0.859375,
+        "label": "partial lower-bound diagnostic only; not a completed request throughput"
+      },
+      "unavailable": [
+        "measured response JSON",
+        "measured output-contract hash",
+        "per-request metrics delta",
+        "valid completed throughput"
+      ]
+    },
+    "G": {
+      "name": "dspark_gpu_markov_ids",
+      "raw_launch": {
+        "path": "receipts/dsv4/gpu-markov-g-recovery-2026-08-08/boots/boot-00-G/launch.json",
+        "sha256": "7e15a406351ebf34be8a2f74e84c94d2434295361b030a9f0a4a2021c3d238cf",
+        "port": 27370,
+        "pid": 39371
+      },
+      "outcome": "excluded_warmup_http_timeout_before_measured_request",
+      "client_error": "TimeoutError: timed out",
+      "engagement": {
+        "spec_stats_count": 1,
+        "gpu_markov_marker_count": 1,
+        "gpu_markov_marker": "dsv4: DSpark GPU Markov-ID path engaged (one typed ID/confidence eval; draft logits stay on device)",
+        "server_log_spec_stats": {
+          "attempts": 25,
+          "accepted_tokens": 39,
+          "average_accepted_per_round": 1.56
+        }
+      },
+      "server_log_after_client_timeout": {
+        "logged_emitted_tokens": 62,
+        "max_tokens_requested": 64,
+        "logged_elapsed_ms": 900981,
+        "logged_finish_label": "length",
+        "finish_label_interpretation": "cancellation-accounting artifact: the 900-second client timeout triggered SIGTERM before the inference thread published a cancelled reason",
+        "server_log_sha256": "03e8930812109795acc52e35059d2923599e5e6b7839aa067fa7c10b90c11e91"
+      },
+      "derived_partial_diagnostic": {
+        "observed_tokens_divided_by_server_logged_elapsed_tokens_per_second": 0.068813881758,
+        "observed_fraction_of_requested_token_cap": 0.96875,
+        "label": "partial lower-bound diagnostic only; not a completed request throughput"
+      },
+      "unavailable": [
+        "measured response JSON",
+        "measured output-contract hash",
+        "per-request metrics delta",
+        "valid completed throughput"
+      ]
+    }
+  },
+  "claim_limits": [
+    "The S result is one completed measured sample, not a distribution or a release benchmark.",
+    "L and G reached their server-log emissions only after the 900-second client timeout during the excluded warmup. Their raw HTTP responses were not captured, so neither quality parity nor exact token parity was established.",
+    "The GPU Markov-ID marker count of one proves fast-path engagement for G; it does not prove a speedup, final output equivalence, or a valid throughput measurement.",
+    "The partial 55/62 token counts with a length label are timeout/SIGTERM cancellation artifacts, not normal max-token completions and not evidence of a remaining DSpark cap bug.",
+    "The partial elapsed rates include prefill, draft work, verification, shutdown timing, and incomplete request handling. They must not be compared with S's completed decode rate.",
+    "No three-arm ordering, median, confidence interval, or cross-arm speed claim is justified until all arms complete the same measured protocol and their output-contract hashes match."
+  ]
+}

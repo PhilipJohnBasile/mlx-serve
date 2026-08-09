@@ -1,0 +1,16 @@
+{
+  "enable_drafter": false,
+  "enable_mtp": true,
+  "enable_pld": false,
+  "max_tokens": 64,
+  "messages": [
+    {
+      "content": "You are reviewing a local inference engine. In four concise bullets, explain how to improve speculative decoding while preserving exact greedy-token equivalence. Cover KV-cache ownership, batched verification, GPU/host synchronization, and regression tests.",
+      "role": "user"
+    }
+  ],
+  "model": "dspark-lite-A",
+  "stream": false,
+  "temperature": 0,
+  "top_p": 1
+}

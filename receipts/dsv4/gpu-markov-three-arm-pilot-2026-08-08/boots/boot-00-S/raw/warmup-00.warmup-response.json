@@ -1,0 +1,36 @@
+{
+  "choices": [
+    {
+      "finish_reason": "length",
+      "index": 0,
+      "logprobs": null,
+      "message": {
+        "content": "Here are four concise, actionable improvements for speculative decoding that preserve exact greedy-token equivalence:\n\n1. **Enforce strict KV-cache ownership per sequence.**  \n   During speculative decoding, the draft model and target model must share the *same* KV-cache entries for each token position, with no divergence in hidden states",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1786243211,
+  "id": "chatcmpl-1786243211078",
+  "model": "dspark-lite-A",
+  "object": "chat.completion",
+  "system_fingerprint": "mlx-serve",
+  "timings": {
+    "cached_n": 0,
+    "predicted_ms": 101599.073,
+    "predicted_n": 64,
+    "predicted_per_second": 0.63,
+    "prompt_ms": 3022.51,
+    "prompt_n": 50,
+    "prompt_per_second": 16.543,
+    "tokenize_ms": 4.069
+  },
+  "usage": {
+    "completion_tokens": 64,
+    "prompt_tokens": 50,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 114
+  }
+}

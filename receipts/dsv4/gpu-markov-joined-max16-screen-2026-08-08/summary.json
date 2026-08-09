@@ -1,0 +1,104 @@
+{
+  "arms": {
+    "J": {
+      "completion_tokens": 16,
+      "metrics_decode_seconds_total": 196.726807585,
+      "metrics_decode_tokens_per_second": 0.08133106106084124,
+      "metrics_ttft_seconds_mean": 31.084286415999998,
+      "metrics_ttft_seconds_total": 31.084286415999998,
+      "name": "dspark_gpu_markov_ids_joined_verify_eval",
+      "response_predicted_ms_mean": 226562.724,
+      "samples": 1,
+      "wall_seconds_total": 257.6480785,
+      "wall_tokens_per_second": 0.06210021085020434
+    },
+    "S": {
+      "completion_tokens": 16,
+      "metrics_decode_seconds_total": 65.458221541,
+      "metrics_decode_tokens_per_second": 0.24443071662095708,
+      "metrics_ttft_seconds_mean": 6.278513,
+      "metrics_ttft_seconds_total": 6.278513,
+      "name": "plain_serial",
+      "response_predicted_ms_mean": 65460.814,
+      "samples": 1,
+      "wall_seconds_total": 71.740453709,
+      "wall_tokens_per_second": 0.2230261891693719
+    }
+  },
+  "comparability": {
+    "comparison_receipt": null,
+    "cross_arm_output_equivalence": "exact match only across covered arms S,J; missing required arms L,G",
+    "cross_arm_speed_scope": "same-receipt one-pass pilot; directional timing only",
+    "effective_request_config": {
+      "enable_drafter": false,
+      "enable_mtp_by_arm": {
+        "G": true,
+        "J": true,
+        "L": true,
+        "S": false
+      },
+      "enable_pld": false,
+      "endpoint": "/v1/chat/completions",
+      "max_tokens": 16,
+      "model": "dspark-lite-A",
+      "stream": false,
+      "temperature": 0,
+      "top_p": 1
+    },
+    "same_binary": true,
+    "same_model_directory": true,
+    "same_prompt": true,
+    "selected_arms": [
+      "S",
+      "J"
+    ],
+    "speed_reported_only_after_exact_output_contract_match": true
+  },
+  "output_arm_coverage": {
+    "canonical_baseline_arms": [
+      "S",
+      "L",
+      "G"
+    ],
+    "comparison_receipt_arms": [],
+    "complete_for_required_arms": false,
+    "covered_arms": [
+      "S",
+      "J"
+    ],
+    "current_receipt_arms": [
+      "S",
+      "J"
+    ],
+    "missing_required_arms": [
+      "L",
+      "G"
+    ],
+    "required_arms": [
+      "S",
+      "L",
+      "G",
+      "J"
+    ],
+    "selected_current_receipt_arms": [
+      "S",
+      "J"
+    ]
+  },
+  "output_contract_sha256": "1ce33223d6fbc79006db676899d687d28270b28dcfa6c1644d3b1597b7ad8a90",
+  "receipt_dir": "receipts/dsv4/gpu-markov-joined-max16-screen-2026-08-08",
+  "schedule": {
+    "complete_frozen_schedule": true,
+    "counterbalanced": false,
+    "expected_orders": [
+      "SJ"
+    ],
+    "label": "one-pass pilot",
+    "measurements_complete": true,
+    "mode": "pilot",
+    "observed_orders": [
+      "SJ"
+    ],
+    "position_balanced": false
+  }
+}

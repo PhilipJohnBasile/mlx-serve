@@ -1,0 +1,10 @@
+{
+  "arms": [
+    "S"
+  ],
+  "manifest": "/Users/pjb/git/mlx-serve/receipts/dsv4/gpu-markov-three-arm-pilot-2026-08-08/manifest.json",
+  "manifest_sha256": "e7a7b405879ecf8b776c415f316ec6d2c46b36865282598b7e2ccaaecbd55fa2",
+  "measurement_count": 1,
+  "measurement_source": "/Users/pjb/git/mlx-serve/receipts/dsv4/gpu-markov-three-arm-pilot-2026-08-08/boots.json",
+  "receipt_dir": "/Users/pjb/git/mlx-serve/receipts/dsv4/gpu-markov-three-arm-pilot-2026-08-08"
+}
