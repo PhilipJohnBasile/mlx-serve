@@ -6739,10 +6739,11 @@ fn maskForLogitVocab(allocator: std.mem.Allocator, mask: []const bool, vocab_siz
 
 /// Apply top-k filtering: keep only the top k logits, set the rest to -inf.
 fn applyTopK(res: *mlx.mlx_array, logits: mlx.mlx_array, k: u32, s: mlx.mlx_stream) !void {
-    // Get the top-k values (returned in descending order)
+    // MLX's no-axis topk flattens its input. Sampling logits can be [B, V]
+    // or [1, L, V], so always retain k candidates independently per vocab row.
     var topk_vals = mlx.mlx_array_new();
     defer _ = mlx.mlx_array_free(topk_vals);
-    try mlx.check(mlx.mlx_topk(&topk_vals, logits, @intCast(k), s));
+    try mlx.check(mlx.mlx_topk_axis(&topk_vals, logits, @intCast(k), -1, s));
 
     // Get the minimum of the top-k values (the k-th largest) as cutoff
     var cutoff = mlx.mlx_array_new();
@@ -6969,6 +6970,47 @@ test "SamplingParams custom values" {
     try testing.expectApproxEqAbs(@as(f32, 0.9), params.top_p, 0.001);
     try testing.expectEqual(@as(u32, 40), params.top_k);
     try testing.expectEqual(@as(u64, 42), params.seed.?);
+}
+
+test "applyTopK retains independent top-k support for every logits row" {
+    const s = mlx.gpuStream();
+    // The two rows deliberately put their top-two values in different columns.
+    // A flattening top-k would retain only the two global 9s instead.
+    const batched_data = [_]f32{
+        9.0, 8.0, 1.0,  0.0, -1.0,
+        1.0, 0.0, -1.0, 9.0, 8.0,
+    };
+    const batched_shape = [_]c_int{ 2, 5 };
+    const batched_logits = mlx.mlx_array_new_data(&batched_data, &batched_shape, 2, .float32);
+    defer _ = mlx.mlx_array_free(batched_logits);
+    var batched = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(batched);
+    try applyTopK(&batched, batched_logits, 2, s);
+    try mlx.check(mlx.mlx_array_eval(batched));
+    const batched_out = mlx.mlx_array_data_float32(batched) orelse return error.MlxArrayDataNull;
+
+    for ([_]usize{ 0, 1, 8, 9 }) |idx| {
+        try testing.expectApproxEqAbs(batched_data[idx], batched_out[idx], 0.0);
+    }
+    for ([_]usize{ 2, 3, 4, 5, 6, 7 }) |idx| {
+        try testing.expect(std.math.isInf(batched_out[idx]) and batched_out[idx] < 0.0);
+    }
+
+    // Preserve the established single-row path too.
+    const single_data = batched_data[0..5].*;
+    const single_shape = [_]c_int{ 1, 5 };
+    const single_logits = mlx.mlx_array_new_data(&single_data, &single_shape, 2, .float32);
+    defer _ = mlx.mlx_array_free(single_logits);
+    var single = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(single);
+    try applyTopK(&single, single_logits, 2, s);
+    try mlx.check(mlx.mlx_array_eval(single));
+    const single_out = mlx.mlx_array_data_float32(single) orelse return error.MlxArrayDataNull;
+    try testing.expectApproxEqAbs(@as(f32, 9.0), single_out[0], 0.0);
+    try testing.expectApproxEqAbs(@as(f32, 8.0), single_out[1], 0.0);
+    for (single_out[2..5]) |value| {
+        try testing.expect(std.math.isInf(value) and value < 0.0);
+    }
 }
 
 test "specDecodeUnsupported: release-enforced guard for spec + constraint/logprobs (issue #97)" {
