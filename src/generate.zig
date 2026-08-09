@@ -453,6 +453,25 @@ pub fn shouldClearAllocatorCache(step: u32, last_clear: u32, interval: u32) bool
     return step -| last_clear >= interval;
 }
 
+/// Serial `checkStop` carries a pad run across calls. DSpark commits a prefix
+/// at once, so advance that same counter across only the retained tokens.
+fn consecutivePadRunAfter(initial: u32, tokens: []const u32) u32 {
+    var run = initial;
+    for (tokens) |token| {
+        if (token == 0) run += 1 else run = 0;
+    }
+    return run;
+}
+
+test "dsv4: DSpark terminal pad retains the serial prefix" {
+    const verify = [_]u32{ 7, 0, 0, 0, 8 };
+    const plan = dsv4_mod.dsparkCommitPlanWithPad(&verify, 4, verify.len, &.{}, 0);
+    try std.testing.expectEqual(@as(usize, 3), plan.committed);
+    try std.testing.expect(plan.stop_after);
+    try std.testing.expectEqual(@as(u32, 2), consecutivePadRunAfter(0, verify[0..plan.committed]));
+    try std.testing.expectEqual(@as(u32, 0), dsv4_mod.dsparkNextTokenForPlan(&verify, 4, plan, 91));
+}
+
 /// Step-based generator. Call `init` to prefill, then `next` per token.
 /// Uses a fully-lazy async pipeline matching mlx-lm: sample + next forward are
 /// built as a single lazy computation graph, async_eval'd together. The GPU
@@ -2024,6 +2043,9 @@ pub const Generator = struct {
         }
         if (specDecodeUnsupported(self.sampling, self.logprobs_n)) return error.SpecDecodeUnsupported;
         const mdl = self.xfm.dsv4.?;
+        const consecutive_pad_before = self.consecutive_pad;
+        if (try self.checkStop()) return null;
+        const remaining: usize = @intCast(self.max_tokens -| self.completion_tokens);
         const t1 = self.next_token_id;
         const debug_state = std.c.getenv("MLX_SERVE_DSPARK_TRACE_STATE") != null;
         if (debug_state) {
@@ -2031,21 +2053,10 @@ pub const Generator = struct {
             log.info("[dspark-debug] before t1={d} n={d} hash={x} pending={d}\n", .{ t1, fp.n, fp.hash, fp.pending_rows });
         }
         var round = if (self.dspark_stochastic)
-            try self.dsparkStochasticRound(allocator, mdl, t1)
+            try self.dsparkStochasticRound(allocator, mdl, t1, remaining, consecutive_pad_before)
         else
-            try dsv4_mod.dsparkRound(mdl, allocator, &mdl.dec_state.?, t1);
+            try dsv4_mod.dsparkRoundCapped(mdl, allocator, &mdl.dec_state.?, t1, remaining, self.eos_token_ids, consecutive_pad_before);
         errdefer round.deinit(allocator);
-        const remaining: usize = @intCast(self.max_tokens -| self.completion_tokens);
-        if (round.tokens.len > remaining) {
-            const limited = try allocator.alloc(u32, remaining);
-            @memcpy(limited, round.tokens[0..remaining]);
-            allocator.free(round.tokens);
-            round.tokens = limited;
-            round.accepted = if (remaining > 0)
-                @min(round.accepted, @as(u32, @intCast(remaining - 1)))
-            else
-                0;
-        }
         // dsparkRound advanced the module state — mirror it on the shell
         // cache verbatim so a later serial fallback (or the fresh-request
         // check keying on step==0) sees a consistent position. Generator.step
@@ -2056,12 +2067,21 @@ pub const Generator = struct {
         try self.generated_ids.appendSlice(allocator, round.tokens);
         self.advanceStep(@intCast(round.tokens.len));
         self.next_token_id = round.next_token;
+        self.consecutive_pad = consecutivePadRunAfter(consecutive_pad_before, round.tokens);
+        if (round.stop_after) {
+            self.done = true;
+            self.finish_reason = "stop";
+        }
         if (debug_state) {
             const fp = dsv4_mod.fingerprintDecodeState(&mdl.dec_state.?);
             log.info("[dspark-debug] after tokens={any} next={d} accepted={d} n={d} hash={x} pending={d}\n", .{ round.tokens, round.next_token, round.accepted, fp.n, fp.hash, fp.pending_rows });
         }
         // tokens ownership transfers to the caller (scheduler frees).
-        return DrafterStepResult{ .tokens = round.tokens, .accepted_tokens = round.accepted };
+        return DrafterStepResult{
+            .tokens = round.tokens,
+            .accepted_tokens = round.accepted,
+            .finish_after_emit = round.stop_after,
+        };
     }
 
     /// One stochastic DSpark round: dsv4's own greedy stage draft (a one-hot
@@ -2075,7 +2095,7 @@ pub const Generator = struct {
     /// (the toy-vocab exactness test's invariant), and the correction always
     /// derives from the ORIGINAL verify logits at the acceptance point — the
     /// house partial-accept invariant in sampled form.
-    fn dsparkStochasticRound(self: *Generator, allocator: std.mem.Allocator, mdl: *dsv4_mod.Dsv4Model, t1: u32) !dsv4_mod.DsparkRound {
+    fn dsparkStochasticRound(self: *Generator, allocator: std.mem.Allocator, mdl: *dsv4_mod.Dsv4Model, t1: u32, max_committed: usize, initial_consecutive_pad: u32) !dsv4_mod.DsparkRound {
         const s = self.xfm.s;
         var pending = try dsv4_mod.dsparkBegin(mdl, allocator, &mdl.dec_state.?, t1);
         defer pending.deinit();
@@ -2150,7 +2170,12 @@ pub const Generator = struct {
         }
         pending.lapVerify(mdl);
 
-        const round = try dsv4_mod.dsparkFinish(mdl, allocator, &mdl.dec_state.?, &pending, accepted, next_token);
+        const plan = dsv4_mod.dsparkCommitPlanWithPad(pending.verify[0 .. pending.b + 1], @intCast(accepted), max_committed, self.eos_token_ids, initial_consecutive_pad);
+        // nextDspark pre-checks EOS t1, so any planned prefix retains it.
+        std.debug.assert(plan.committed > 0);
+        const continuation = dsv4_mod.dsparkNextTokenForPlan(pending.verify[0 .. pending.b + 1], @intCast(accepted), plan, next_token);
+        var round = try dsv4_mod.dsparkFinish(mdl, allocator, &mdl.dec_state.?, &pending, plan.committed - 1, continuation);
+        round.stop_after = plan.stop_after;
         dsv4_mod.dsparkObserve(mdl, round.phases);
         return round;
     }
@@ -2622,6 +2647,10 @@ pub const Generator = struct {
         tokens: []const u32,
         /// Number of *drafted* tokens accepted (excludes always-accepted t1).
         accepted_tokens: u32,
+        /// The tokens are the retained prefix before a terminal condition
+        /// such as EOS or the third consecutive pad. The scheduler emits that
+        /// prefix, then finishes this request without a second decode tick.
+        finish_after_emit: bool = false,
     };
 
     /// Drafter-assisted decode step. Mirrors `nextPld` but the draft comes
@@ -8970,11 +8999,12 @@ test "dsv4: stochastic dspark engages at sampled temperature and keeps the exit 
     try testing.expect(gen2.dspark_enabled);
     var n2: usize = 0;
     while (n2 < 4) {
+        const prior_t1 = gen2.next_token_id;
         const r = (try gen2.nextDspark(allocator)) orelse break;
         defer allocator.free(r.tokens);
         try testing.expectEqual(@as(u32, 0), r.accepted_tokens);
         try testing.expectEqual(@as(usize, 1), r.tokens.len);
-        try testing.expect(r.tokens[0] < mdl.vocab);
+        try testing.expectEqual(prior_t1, r.tokens[0]);
         n2 += 1;
     }
     try testing.expectEqual(@as(usize, 4), n2);

@@ -1,0 +1,19 @@
+DSpark full exact-parity checkpoint provenance receipt
+Date: 2026-08-08 America/New_York
+Base: /Users/pjb/models/mlx-community/DeepSeek-V4-Flash-0731-tailfix-calibrated-base
+Constructed checkpoint: /tmp/dspark-full
+
+Direct verification:
+- cmp reported byte equality for model-layer-0.safetensors through model-layer-42.safetensors and model-top.safetensors against the Gold base.
+- cmp reported byte equality for README.md, generation_config.json, tokenizer.json, tokenizer_config.json, and model.safetensors.index.json against the Gold base.
+- /tmp/dspark-full adds model-mtp.safetensors (11494725868 bytes).
+- /tmp/dspark-full/config.json is the DSpark quantization config shared byte-for-byte with /tmp/dspark-lite-A.
+
+Identity:
+- config sha256: edebdb2537a0871ca3f15bcc7eed5a24369e157be2c898c15459eb1f196c124a
+- model.safetensors.index.json sha256: 21d6b4216847f143429b46573aaab1e6e21c17dad8f9870115d0405e4593435d
+- model-mtp.safetensors sha256: 5fccc61812951c5e9c197b9964e8d31f39daf4abe57a26203da09e58a5edd4df
+- filename-size-target manifest sha256: 5c5e89ff76c49a85d98ee2746f8982d899e64a4dbeacddd0f7ad1dc238d25a68
+
+Claim limit:
+- The original construction command and upstream MTP download revision were not retained. This receipt records a reconstructed, directly verified Gold-base-plus-MTP relationship; it does not assert upstream source fidelity for the MTP sidecar.

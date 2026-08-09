@@ -1,0 +1,199 @@
+{
+  "schema_version": 1,
+  "created_at_utc": "2026-08-09T00:56:51Z",
+  "candidate": {
+    "branch": "dspark-serial-equivalence",
+    "base_head": "31595a639643ac6082587c6bdf38a83fd779948e",
+    "source_diff_sha256": "0da23a9cde14a951131c106a52f8fdd6143b7cb106f2489b7aced2f41da3fd35",
+    "source_files": [
+      "src/deepseek_v4.zig",
+      "src/generate.zig",
+      "src/scheduler.zig"
+    ],
+    "releasefast_binary_sha256": "ce85e8621527fdf1b0946a4007f20eb7218fe8d29d143fb760187bcf990e1124"
+  },
+  "runtime": {
+    "hardware": "Apple M5 Max",
+    "hardware_model": "Mac17,6",
+    "memory_bytes": 137438953472,
+    "os": "macOS 27.0 build 26A5388g",
+    "mlx_serve": "26.8.1",
+    "mlx": "0.32.0",
+    "mlx_c": "fba4470b8907",
+    "zig": "0.17.0-dev.1422+e863bf3be"
+  },
+  "checkpoint_identity": {
+    "control": {
+      "path": "/Users/pjb/models/mlx-community/DeepSeek-V4-Flash-0731-tailfix-calibrated-base",
+      "config_sha256": "d04413787376e8bfc621f3b22c473bf1cfe4ad18d8c6d0cca85dda16d08bce3e",
+      "index_sha256": "21d6b4216847f143429b46573aaab1e6e21c17dad8f9870115d0405e4593435d",
+      "filename_size_manifest_sha256": "12a9ba9901938da36836b86f3f2077fa662658c99624afa05443b233e5258240"
+    },
+    "candidate": {
+      "path": "/tmp/dspark-lite-A",
+      "config_sha256": "edebdb2537a0871ca3f15bcc7eed5a24369e157be2c898c15459eb1f196c124a",
+      "index_sha256": "21d6b4216847f143429b46573aaab1e6e21c17dad8f9870115d0405e4593435d",
+      "filename_size_manifest_sha256": "626ee825430be148504e293ff75d14565ee4420a228aebfe773da87951db992f"
+    },
+    "exact_parity": {
+      "path": "/tmp/dspark-full",
+      "config_sha256": "edebdb2537a0871ca3f15bcc7eed5a24369e157be2c898c15459eb1f196c124a",
+      "index_sha256": "21d6b4216847f143429b46573aaab1e6e21c17dad8f9870115d0405e4593435d",
+      "filename_size_manifest_sha256": "5c5e89ff76c49a85d98ee2746f8982d899e64a4dbeacddd0f7ad1dc238d25a68",
+      "construction": "directly verified byte-equal Gold base weights and metadata, plus dense model-mtp.safetensors and the DSpark quantization config shared with the Lite candidate",
+      "base_byte_comparison": "passed for model-layer-0 through model-layer-42, model-top, tokenizer and index metadata",
+      "mtp_size_bytes": 11494725868,
+      "mtp_sha256": "5fccc61812951c5e9c197b9964e8d31f39daf4abe57a26203da09e58a5edd4df",
+      "construction_command": "not_retained",
+      "upstream_mtp_revision": "not_established",
+      "provenance_receipt": "receipts/dsv4/raw/2026-08-08-dspark-full-provenance.txt"
+    },
+    "full_content_hashes": "not_run"
+  },
+  "statuses": {
+    "exact_parity": "passed",
+    "source_fidelity": "not_run",
+    "multi_request_lifecycle_memory": "passed",
+    "performance": "characterization_only",
+    "production_server": "passed"
+  },
+  "gates": {
+    "full_test_suite": {
+      "status": "passed",
+      "result": "1294 of 1405 passed, 111 skipped, zero failed",
+      "cache": "/tmp/mlx-serve-test-cache-019fe232d"
+    },
+    "releasefast_build": {
+      "status": "passed",
+      "result": "7 of 7 steps succeeded"
+    },
+    "b1_b5_batched_differential": {
+      "status": "passed",
+      "model": "/tmp/dspark-full",
+      "rows": "B1-B5",
+      "result": "all captured logits, lazy logits, state fingerprints, state contents, top-5 tokens, layer-0 stages, layer-2 indexed stages, and head stages were exactly equal; max_abs=0"
+    },
+    "six_lane_serial_equivalence": {
+      "status": "passed",
+      "model": "/tmp/dspark-full",
+      "result": "22 of 22 tests passed; lanes B-E had top=true, hash=true, max_abs=0; lane F completed four rounds with accepted counts 2,0,0,2",
+      "peak_residency": "67G"
+    },
+    "zero_draft_greedy": {
+      "status": "passed",
+      "result": "22 of 22 tests passed; closed confidence emitted six serial-identical tokens and open confidence used block 3"
+    },
+    "zero_draft_stochastic": {
+      "status": "passed",
+      "result": "22 of 22 tests passed; four single-token zero-draft rounds preserved the actual pending token"
+    },
+    "multi_request_server": {
+      "status": "passed",
+      "protocol": {
+        "requests": 6,
+        "max_tokens": 32,
+        "temperature": 0,
+        "prefix_cache": "disabled",
+        "kv_quant": "off",
+        "control_dspark": false,
+        "candidate_dspark": true
+      },
+      "output_hashes": [
+        "66416e426f44a2aafcd08d49d0e3457cb2df73627a486eb0208b1f5a68ccf43d",
+        "7b403377af4e7bdfc6aef169b7b7c2bceb4643bb6df1f5c659a1c88950b27b75",
+        "b1d8dffae79fc90ba89e65970469c8220a9b9ef79c3268ccb8bed0cf3794ca56",
+        "01fadb37965030b5eb667c7d099100e197ad70ca8aa8431350773da170d501c7",
+        "282a2457b4bc7b8ac30187cede753f43e8f3ee34d0b6d91bb452207bb35c4789",
+        "66416e426f44a2aafcd08d49d0e3457cb2df73627a486eb0208b1f5a68ccf43d"
+      ],
+      "all_control_candidate_hashes_equal": true,
+      "all_finish_reasons_equal": true,
+      "all_completion_token_counts_equal": true,
+      "candidate_elapsed_seconds": [
+        47.51835204201052,
+        58.222135208023246,
+        48.25044545799028,
+        57.981046333006816,
+        90.22636529098963,
+        53.35543404199416
+      ],
+      "candidate_average_accepted_per_round": [
+        2.56,
+        1.91,
+        3.0,
+        2.56,
+        0.88,
+        2.56
+      ],
+      "settled_memory": {
+        "active_bytes_each_request": [
+          115560864804,
+          115560864804,
+          115560864804,
+          115560864804,
+          115560864804,
+          115560864804
+        ],
+        "cache_bytes_each_request": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "stable": true,
+        "fifth_request_completed": true,
+        "successor_request_completed": true
+      },
+      "raw_artifacts": {
+        "full_receipt_path": "receipts/dsv4/raw/2026-08-08-multi-request-results.json",
+        "full_receipt_sha256": "f38505f7edea2e19f474d8d89bbc60f6966c0227509f5ed8069313a19d7f66ce",
+        "control_log_archive_path": "receipts/dsv4/raw/2026-08-08-control-server.log.gz",
+        "control_log_archive_sha256": "f4c6333122f2bb3ec32524f9ecdd1615a52543633794a6de7247a64332706bf7",
+        "control_log_uncompressed_sha256": "b48e542530f96cb3b3f11d2493635e7e6f81c65bac3a5258c622b0c3aa9a4bcb",
+        "candidate_log_archive_path": "receipts/dsv4/raw/2026-08-08-candidate-server.log.gz",
+        "candidate_log_archive_sha256": "d611693c38e07029faed81d4d7d5501c1a33730b58b2e99a8d9667a0b8ece61c",
+        "candidate_log_uncompressed_sha256": "7ca2b7b19d17b9d7eec12bdbab4d6dba6117713dca24560320cf0fda9e7de7520"
+      }
+    },
+    "performance_profile": {
+      "status": "characterization_only",
+      "environment": {
+        "MLX_SERVE_DSPARK_PROFILE": "1",
+        "serial_verify": "unset",
+        "dsv4_trace": "unset",
+        "dspark_trace_state": "unset"
+      },
+      "request": {
+        "prompt_tokens": 14,
+        "completion_tokens": 64,
+        "temperature": 0,
+        "elapsed_seconds": 112.81249708399992
+      },
+      "profile_after_16_rounds": {
+        "submitted_per_round": 5.0,
+        "accepted_per_round": 2.56,
+        "round_ms": 6278.1,
+        "draft_ms": 4537.2,
+        "markov_ms": 3916.9,
+        "snapshot_ms": 0.37,
+        "verify_ms": 1740.3,
+        "verify_head_ms": 0.0,
+        "verify_compressor_sync_ms": 1053.3,
+        "rollback_ms": 0.1,
+        "ms_per_committed_token": 1762.3
+      },
+      "raw_log_archive_path": "receipts/dsv4/raw/2026-08-08-dspark-profile.log.gz",
+      "raw_log_archive_sha256": "f85c6ca4923d9a090d2bbfc7f078c56dc1900d8f86734ef063f4c698c9712bf2",
+      "raw_log_uncompressed_sha256": "c14db8ce0eca4d96cc214ad3b8e913ed09e633c61d269f4292f9f69c1d810185"
+    }
+  },
+  "claim_limits": [
+    "Exact parity is against the local Gold checkpoint, not the official source checkpoint.",
+    "Full checkpoint content hashes were not computed.",
+    "The short server lane characterizes speed but is not a controlled performance benchmark.",
+    "The one-shot integrated cleanup-allocation fault-injection gate remains not run.",
+    "The original dspark-full construction command and upstream MTP revision were not retained; its Gold-base-plus-MTP relationship was reconstructed and directly verified."
+  ]
+}

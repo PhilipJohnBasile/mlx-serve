@@ -638,6 +638,10 @@ pub const Dsv4Model = struct {
     // per-request incremental decode state (serial-only; recreated when the
     // serving seam sees cache.step == 0)
     dec_state: ?Dsv4DecodeState = null,
+    /// The scheduler reserves this module-owned state for the admitted Slot
+    /// before prefill. A queued/cancelled non-owner must never release an
+    /// active request's rings just because it targets this same model.
+    dec_state_owner: ?usize = null,
     // per-layer wo_a dequantized as batched-matmul operands [og, gin, ol]
     // bf16 (built once at init — dequantizing 134 MB per layer per TOKEN was
     // the v0 decode's dominant cost). EMPTY when wo_a is served quantized
@@ -809,10 +813,38 @@ pub const Dsv4Model = struct {
         if (self.ds_hc_head_fn_t) |h| _ = mlx.mlx_array_free(h);
         if (self.ds_markov_w2_t) |h| _ = mlx.mlx_array_free(h);
         if (self.ds_conf_proj_t) |h| _ = mlx.mlx_array_free(h);
-        if (self.dec_state) |*ds| deinitDecodeState(ds);
+        _ = self.releaseDecodeState();
         self.history.deinit();
         self.arena.deinit();
         self.dw.deinit();
+    }
+
+    /// Unconditional model-teardown release. Scheduler request teardown must
+    /// use `releaseDecodeStateOwnedBy` so a stale Slot cannot free another
+    /// request's shared rings; clearing the optional keeps model deinit
+    /// idempotent.
+    pub fn releaseDecodeState(self: *Dsv4Model) bool {
+        self.dec_state_owner = null;
+        return releaseOptionalDecodeState(&self.dec_state);
+    }
+
+    /// Reserve the shared decode state for one scheduler slot. This happens
+    /// immediately after exclusive admission and before prefill, so a failure
+    /// after allocating the state still has an owner that can retire it.
+    pub fn claimDecodeStateOwner(self: *Dsv4Model, owner: usize) bool {
+        return claimDecodeStateOwnerToken(&self.dec_state_owner, owner);
+    }
+
+    /// Clear and release only the state belonging to `owner`. Keeping the
+    /// identity check beside the state transition prevents a retained cleanup
+    /// Slot from deinitializing a newer request's module-owned decode rings.
+    pub fn releaseDecodeStateOwnedBy(self: *Dsv4Model, owner: usize) bool {
+        if (!releaseDecodeStateOwnerToken(&self.dec_state_owner, owner)) return false;
+        return releaseOptionalDecodeState(&self.dec_state);
+    }
+
+    pub fn decodeStateOwnedBy(self: *const Dsv4Model, owner: usize) bool {
+        return self.dec_state_owner != null and self.dec_state_owner.? == owner;
     }
 };
 
@@ -4122,9 +4154,12 @@ test "dsv4: the confidence gate truncates the block without changing tokens (DSV
     defer emitted.deinit(allocator);
     var guard: usize = 0;
     while (emitted.items.len < T and guard < 32) : (guard += 1) {
+        const prior_t = t;
         var round = try dsparkRound(&mdl, allocator, &st, t);
         defer round.deinit(allocator);
         try testing.expectEqual(@as(u32, 0), round.accepted); // gate shut
+        try testing.expectEqual(@as(usize, 1), round.tokens.len);
+        try testing.expectEqual(prior_t, round.tokens[0]);
         try emitted.appendSlice(allocator, round.tokens);
         t = round.next_token;
     }
@@ -4668,6 +4703,70 @@ pub fn deinitDecodeState(st: *Dsv4DecodeState) void {
         st.alloc.free(ds.main_kv);
         _ = mlx.mlx_array_free(ds.mh_last);
     }
+}
+
+/// Release an optional request state. Owner-token clearing stays in the
+/// model-level transition so teardown is never authorized by this state-only
+/// helper.
+fn releaseOptionalDecodeState(state: *?Dsv4DecodeState) bool {
+    if (state.*) |*ds| {
+        deinitDecodeState(ds);
+        state.* = null;
+        return true;
+    }
+    return false;
+}
+
+fn claimDecodeStateOwnerToken(owner: *?usize, token: usize) bool {
+    std.debug.assert(token != 0);
+    if (owner.* != null) return false;
+    owner.* = token;
+    return true;
+}
+
+fn releaseDecodeStateOwnerToken(owner: *?usize, token: usize) bool {
+    std.debug.assert(token != 0);
+    if (owner.* == null or owner.*.? != token) return false;
+    owner.* = null;
+    return true;
+}
+
+test "dsv4: release decode state clears its owner once" {
+    var state: ?Dsv4DecodeState = .{
+        .layers = try testing.allocator.alloc(LayerDecState, 0),
+        .n = 0,
+        .alloc = testing.allocator,
+    };
+
+    try testing.expect(releaseOptionalDecodeState(&state));
+    try testing.expect(state == null);
+    try testing.expect(!releaseOptionalDecodeState(&state));
+}
+
+test "dsv4: decode-state owner rejects pending and stale cleanup slots" {
+    const active_a: usize = 0xA1;
+    const pending_b: usize = 0xB2;
+    const successor_c: usize = 0xC3;
+    var owner: ?usize = null;
+
+    // B was never admitted: its cancellation/cleanup cannot release A.
+    try testing.expect(claimDecodeStateOwnerToken(&owner, active_a));
+    try testing.expect(!releaseDecodeStateOwnerToken(&owner, pending_b));
+    try testing.expectEqual(active_a, owner.?);
+
+    // More than one cleanup batch worth of old slots remain inert through A's
+    // release and C's replacement. This models the retained 17th entry too.
+    var stale: [17]usize = undefined;
+    for (&stale, 0..) |*token, i| token.* = pending_b + i;
+    for (stale) |token| try testing.expect(!releaseDecodeStateOwnerToken(&owner, token));
+    try testing.expect(releaseDecodeStateOwnerToken(&owner, active_a));
+    try testing.expect(owner == null);
+
+    try testing.expect(claimDecodeStateOwnerToken(&owner, successor_c));
+    for (stale) |token| try testing.expect(!releaseDecodeStateOwnerToken(&owner, token));
+    try testing.expectEqual(successor_c, owner.?);
+    try testing.expect(releaseDecodeStateOwnerToken(&owner, successor_c));
+    try testing.expect(owner == null);
 }
 
 // ── snapshot / restore (DSpark verify rollback) ────────────────────────
@@ -10338,6 +10437,10 @@ pub const DsparkRound = struct {
     next_token: u32,
     /// Drafted tokens accepted (excludes the always-committed t1).
     accepted: u32,
+    /// An EOS or terminal pad run occurred immediately after `tokens`. The
+    /// terminal token is deliberately NOT committed, matching serial decode.
+    /// The scheduler must finish after emitting this round's prefix.
+    stop_after: bool = false,
     /// Measured phases — populated only while `Dsv4Model.ds_prof` is armed
     /// (the draft half is filled in by `dsparkRound`, which owns that call).
     phases: DsparkPhases = .{},
@@ -10346,6 +10449,91 @@ pub const DsparkRound = struct {
         alloc.free(self.tokens);
     }
 };
+
+/// The prefix of an accepted DSpark block that may become state.  The verify
+/// pass necessarily evaluates the whole block, but `dsparkFinish` must see
+/// this cap BEFORE it chooses the anchor to retain; truncating `round.tokens`
+/// afterwards leaves an un-emitted tail in the decode state.
+pub const DsparkCommitPlan = struct {
+    /// Number of non-stop tokens to commit (including t1).
+    committed: usize,
+    /// True when an EOS was found immediately after that committed prefix.
+    stop_after: bool,
+};
+
+/// Cap an accepted verify prefix by the request's remaining output budget and
+/// by the first configured EOS. `accepted` is the number of accepted drafts,
+/// so the unbounded commit length is `accepted + 1` for t1. The caller must
+/// handle an EOS t1 before starting a DSpark round: that yields
+/// `committed == 0`, which intentionally cannot be represented by
+/// `dsparkFinish`.
+pub fn dsparkCommitPlan(verify: []const u32, accepted: usize, max_committed: usize, eos_ids: []const u32) DsparkCommitPlan {
+    return dsparkCommitPlanWithPad(verify, accepted, max_committed, eos_ids, 0);
+}
+
+/// `initial_consecutive_pad` is the serial decoder's pad run immediately
+/// before `verify[0]`. A terminal third pad is not committed, just like an
+/// EOS: the caller emits only the retained prefix and then stops.
+pub fn dsparkCommitPlanWithPad(verify: []const u32, accepted: usize, max_committed: usize, eos_ids: []const u32, initial_consecutive_pad: u32) DsparkCommitPlan {
+    std.debug.assert(accepted < verify.len);
+    const committed = @min(accepted + 1, max_committed);
+    var consecutive_pad = initial_consecutive_pad;
+    for (verify[0..committed], 0..) |token, i| {
+        for (eos_ids) |eos| {
+            if (token == eos) return .{ .committed = i, .stop_after = true };
+        }
+        if (token == 0) {
+            consecutive_pad += 1;
+            if (consecutive_pad >= 3) return .{ .committed = i, .stop_after = true };
+        } else {
+            consecutive_pad = 0;
+        }
+    }
+    return .{ .committed = committed, .stop_after = false };
+}
+
+/// Select the token that remains outside a capped accepted prefix. A capped
+/// round has already verified that token as a draft, so it becomes the next
+/// serial input. Only an uncapped round uses its reject correction or bonus.
+pub fn dsparkNextTokenForPlan(verify: []const u32, accepted: usize, plan: DsparkCommitPlan, frontier_next: u32) u32 {
+    std.debug.assert(plan.committed > 0 and plan.committed <= accepted + 1);
+    if (plan.committed <= accepted) return verify[plan.committed];
+    return frontier_next;
+}
+
+test "dsv4: dspark commit plan caps before finish" {
+    const verify = [_]u32{ 10, 11, 12, 99, 13 };
+
+    const length_cap = dsparkCommitPlan(&verify, 4, 2, &.{99});
+    try testing.expectEqual(@as(usize, 2), length_cap.committed);
+    try testing.expect(!length_cap.stop_after);
+
+    const eos_cap = dsparkCommitPlan(&verify, 4, verify.len, &.{99});
+    try testing.expectEqual(@as(usize, 3), eos_cap.committed);
+    try testing.expect(eos_cap.stop_after);
+
+    // An EOS in a rejected draft cannot stop or alter the committed prefix.
+    const rejected_eos = dsparkCommitPlan(&verify, 2, verify.len, &.{99});
+    try testing.expectEqual(@as(usize, 3), rejected_eos.committed);
+    try testing.expect(!rejected_eos.stop_after);
+
+    // The generator recognizes this case before it starts the verify pass.
+    const t1_eos = dsparkCommitPlan(&verify, 4, verify.len, &.{10});
+    try testing.expectEqual(@as(usize, 0), t1_eos.committed);
+    try testing.expect(t1_eos.stop_after);
+
+    const pad_cap = dsparkCommitPlanWithPad(&.{ 7, 0, 0, 0, 8 }, 4, 5, &.{}, 0);
+    try testing.expectEqual(@as(usize, 3), pad_cap.committed);
+    try testing.expect(pad_cap.stop_after);
+
+    const carried_pad_cap = dsparkCommitPlanWithPad(&.{ 0, 0, 8 }, 2, 3, &.{}, 1);
+    try testing.expectEqual(@as(usize, 1), carried_pad_cap.committed);
+    try testing.expect(carried_pad_cap.stop_after);
+
+    try testing.expectEqual(@as(u32, 12), dsparkNextTokenForPlan(&verify, 4, length_cap, 77));
+    const uncapped = dsparkCommitPlan(&verify, 4, verify.len, &.{});
+    try testing.expectEqual(@as(u32, 77), dsparkNextTokenForPlan(&verify, 4, uncapped, 77));
+}
 
 /// An in-flight round between `dsparkBegin`/`dsparkBeginWith` and
 /// `dsparkFinish`: the draft ran, the state snapshot + anchors are armed,
@@ -10432,8 +10620,11 @@ pub fn dsparkBeginWith(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeSta
         defer gpa.free(logits);
         const shape = [_]c_int{ 1, @intCast(m.vocab) };
         const vl_g = mlx.mlx_array_new_data(logits.ptr, &shape, 2, .float32);
-        const empty_verify: [16]u32 = @splat(0);
-        return .{ .snap = snap, .vl_g = vl_g, .b = 0, .verify = empty_verify, .phases = ph, .clk = clk, .prof_on = prof_on, .serial_verify = serial_verify };
+        var verify: [16]u32 = @splat(0);
+        // `dsparkFinish` always emits verify[0]. The confidence gate skipped
+        // drafts, not the real trunk token that this serial step consumed.
+        verify[0] = t1;
+        return .{ .snap = snap, .vl_g = vl_g, .b = 0, .verify = verify, .phases = ph, .clk = clk, .prof_on = prof_on, .serial_verify = serial_verify };
     }
 
     var verify: [16]u32 = undefined;
@@ -10506,12 +10697,19 @@ pub fn dsparkObserve(m: *Dsv4Model, ph: DsparkPhases) void {
 /// no anchor short of the snapshot). Exit: st = entry + tokens.len positions,
 /// next_token not in state — the entry invariant again.
 pub fn dsparkRound(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, t1: u32) !DsparkRound {
+    return dsparkRoundCapped(m, gpa, st, t1, std.math.maxInt(usize), &.{}, 0);
+}
+
+/// Greedy DSpark round with a state-commit cap. The full verify block still
+/// runs so its logits and acceptance decision remain serial-equivalent; only
+/// the prefix retained by `dsparkFinish` is limited.
+pub fn dsparkRoundCapped(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, t1: u32, max_committed: usize, eos_ids: []const u32, initial_consecutive_pad: u32) !DsparkRound {
     const prof_on = m.ds_prof != null;
     var clk: DsparkClock = if (prof_on) DsparkClock.init() else undefined;
     var draft = try dsparkDraft(m, gpa, st, t1);
     defer draft.deinit(gpa);
     const draft_ns: u64 = if (prof_on) clk.lap() else 0;
-    const round = try dsparkRoundWith(m, gpa, st, t1, &draft);
+    const round = try dsparkRoundWithCapped(m, gpa, st, t1, &draft, max_committed, eos_ids, initial_consecutive_pad);
     if (m.ds_prof != null) {
         var ph = round.phases;
         ph.draft_ns = draft_ns;
@@ -10527,6 +10725,10 @@ pub fn dsparkRound(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, 
 /// ON TOP of the begin/finish split so the greedy and stochastic arms share
 /// one verify seam: begin → host read → argmax accept loop → finish.
 fn dsparkRoundWith(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, t1: u32, draft: *const DsparkDraft) !DsparkRound {
+    return dsparkRoundWithCapped(m, gpa, st, t1, draft, std.math.maxInt(usize), &.{}, 0);
+}
+
+fn dsparkRoundWithCapped(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, t1: u32, draft: *const DsparkDraft, max_committed: usize, eos_ids: []const u32, initial_consecutive_pad: u32) !DsparkRound {
     var pending = try dsparkBeginWith(m, gpa, st, t1, draft);
     defer pending.deinit();
     const B = pending.b;
@@ -10573,7 +10775,14 @@ fn dsparkRoundWith(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, 
         });
     }
 
-    return dsparkFinish(m, gpa, st, &pending, accepted, @intCast(next_am));
+    const plan = dsparkCommitPlanWithPad(pending.verify[0 .. B + 1], accepted, max_committed, eos_ids, initial_consecutive_pad);
+    // An EOS t1 is rejected by the Generator before it starts a DSpark
+    // round. Every other capped prefix retains at least t1.
+    std.debug.assert(plan.committed > 0);
+    const next_token = dsparkNextTokenForPlan(pending.verify[0 .. B + 1], accepted, plan, @intCast(next_am));
+    var round = try dsparkFinish(m, gpa, st, &pending, plan.committed - 1, next_token);
+    round.stop_after = plan.stop_after;
+    return round;
 }
 
 // ── GPU-side QAT sims + rope (consolidation round) ─────────────────────

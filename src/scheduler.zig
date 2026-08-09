@@ -388,6 +388,9 @@ pub const Slot = struct {
     error_code: ?[]const u8,
     finish_reason: []const u8,
     cancelled: std.atomic.Value(bool),
+    /// Allocation-free cleanup fallback link. Owned under `queue_mu` from
+    /// `complete()` until the inference thread drains it.
+    cleanup_next: ?*Slot = null,
 
     // ── Stats (filled by inference thread, safe to read after finish). ──
     prompt_tokens: u32,
@@ -768,6 +771,90 @@ pub const Slot = struct {
     }
 };
 
+/// Allocation-free FIFO operations for a self-linked queue. `complete()` uses
+/// this only when the ordinary cleanup ArrayList cannot grow, so a connection
+/// thread never has to free MLX-owned slot state itself.
+fn intrusiveFifoPush(comptime Node: type, comptime next_field: []const u8, head: *?*Node, tail: *?*Node, node: *Node) void {
+    std.debug.assert(@field(node.*, next_field) == null);
+    if (tail.*) |previous| {
+        @field(previous.*, next_field) = node;
+    } else {
+        head.* = node;
+    }
+    tail.* = node;
+}
+
+fn intrusiveFifoTakeAll(comptime Node: type, head: *?*Node, tail: *?*Node) ?*Node {
+    const first = head.*;
+    head.* = null;
+    tail.* = null;
+    return first;
+}
+
+fn enqueueCleanupSlot(
+    allocator: std.mem.Allocator,
+    cleanup_queue: *std.ArrayList(*Slot),
+    overflow_head: *?*Slot,
+    overflow_tail: *?*Slot,
+    slot: *Slot,
+) void {
+    cleanup_queue.append(allocator, slot) catch {
+        intrusiveFifoPush(Slot, "cleanup_next", overflow_head, overflow_tail, slot);
+    };
+}
+
+test "cleanup overflow FIFO keeps every forced fallback slot" {
+    const Node = struct { id: usize, next: ?*@This() = null };
+    var nodes: [17]Node = undefined;
+    for (&nodes, 0..) |*node, i| node.* = .{ .id = i };
+    var head: ?*Node = null;
+    var tail: ?*Node = null;
+    for (&nodes) |*node| intrusiveFifoPush(Node, "next", &head, &tail, node);
+
+    var current = intrusiveFifoTakeAll(Node, &head, &tail);
+    try std.testing.expect(head == null and tail == null);
+    var count: usize = 0;
+    while (current) |node| {
+        try std.testing.expectEqual(count, node.id);
+        current = node.next;
+        node.next = null;
+        count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 17), count);
+}
+
+test "cleanup enqueue uses overflow after allocation failure" {
+    var backing: [0]u8 = .{};
+    var fba = std.heap.FixedBufferAllocator.init(&backing);
+    const allocator = fba.allocator();
+    var cleanup_queue: std.ArrayList(*Slot) = .empty;
+    defer cleanup_queue.deinit(allocator);
+    var slots: [17]Slot = undefined;
+    var overflow_head: ?*Slot = null;
+    var overflow_tail: ?*Slot = null;
+    for (&slots) |*slot| {
+        slot.cleanup_next = null;
+        enqueueCleanupSlot(
+            allocator,
+            &cleanup_queue,
+            &overflow_head,
+            &overflow_tail,
+            slot,
+        );
+    }
+
+    try std.testing.expectEqual(@as(usize, 0), cleanup_queue.items.len);
+    var current = intrusiveFifoTakeAll(Slot, &overflow_head, &overflow_tail);
+    try std.testing.expect(overflow_head == null and overflow_tail == null);
+    for (&slots) |*expected| {
+        const actual = current orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqual(expected, actual);
+        current = actual.cleanup_next;
+        actual.cleanup_next = null;
+    }
+    try std.testing.expect(current == null);
+}
+
 /// Phase A4: pixel data for a single image, decoded by the connection
 /// thread (CPU only — stb_image / libwebp). The inference thread wraps this
 /// in an `mlx_array` via `mlx_array_new_data` and runs the vision encoder.
@@ -1095,6 +1182,11 @@ pub const Scheduler = struct {
     /// inference thread drains this queue between ticks where it owns the
     /// stream binding, so all mlx ops stay on one thread.
     cleanup_queue: std.ArrayList(*Slot),
+    /// Allocation-free overflow for `cleanup_queue`. `complete()` links a
+    /// slot here if ArrayList growth fails; only `queue_mu` protects it and
+    /// only the inference thread destroys its slots.
+    cleanup_overflow_head: ?*Slot,
+    cleanup_overflow_tail: ?*Slot,
     /// Metrics sink. Null when --metrics is off. Populated from LoadParams.
     /// Read once per REQUEST in `finishSlot` — never on the per-token path.
     metrics: ?*metrics_mod.Metrics,
@@ -1223,6 +1315,8 @@ pub const Scheduler = struct {
             .gen_queue = std.ArrayList(*GenRequest).empty,
             .unload_queue = std.ArrayList(*UnloadRequest).empty,
             .cleanup_queue = std.ArrayList(*Slot).empty,
+            .cleanup_overflow_head = null,
+            .cleanup_overflow_tail = null,
             .metrics = params.metrics,
             .router_trace_dir = params.router_trace_dir,
             .router_trace_seq = std.atomic.Value(u64).init(0),
@@ -1284,6 +1378,16 @@ pub const Scheduler = struct {
         self.decoding.deinit(self.allocator);
         for (self.cleanup_queue.items) |slot| slot.deinit();
         self.cleanup_queue.deinit(self.allocator);
+        var cleanup_overflow = intrusiveFifoTakeAll(
+            Slot,
+            &self.cleanup_overflow_head,
+            &self.cleanup_overflow_tail,
+        );
+        while (cleanup_overflow) |slot| {
+            cleanup_overflow = slot.cleanup_next;
+            slot.cleanup_next = null;
+            slot.deinit();
+        }
         // Vision/embed queues should be empty (encodeVision/computeEmbedding
         // block until done) but guard against shutdown-mid-encode by signaling
         // done with an error.
@@ -1468,14 +1572,16 @@ pub const Scheduler = struct {
             self.session_cond.broadcast(self.io);
         }
 
-        self.cleanup_queue.append(self.allocator, slot) catch {
-            // OOM on the cleanup list — fall back to inline deinit. This
-            // races on mlx but is strictly better than the leak; the slot
-            // is no longer referenced from pending/decoding above.
-            self.queue_mu.unlock(self.io);
-            slot.deinit();
-            self.queue_mu.lockUncancelable(self.io);
-        };
+        // An OOM here must not free GPU-linked state on a connection thread.
+        // The allocation-free overflow keeps exact ownership on the
+        // inference thread under this same mutex.
+        enqueueCleanupSlot(
+            self.allocator,
+            &self.cleanup_queue,
+            &self.cleanup_overflow_head,
+            &self.cleanup_overflow_tail,
+            slot,
+        );
         if (self.in_flight > 0) self.in_flight -= 1;
         self.queue_cond.broadcast(self.io); // wake inference thread to drain
         self.submit_cond.broadcast(self.io); // wake any blocked submitter
@@ -2998,6 +3104,8 @@ fn inferenceLoop(ctx: ThreadCtx) void {
         //     real GPU memory release on refcount-zero.
         var cleanup_batch: [16]*Slot = undefined;
         var cleanup_n: usize = 0;
+        var cleanup_overflow: ?*Slot = null;
+        var cleanup_released_dsv4 = false;
         // 0b. Drain any pending vision/embed work. These run synchronously on
         //     behalf of conn threads waiting in `encodeVision` /
         //     `computeEmbedding`. Processed here (not concurrently with decode
@@ -3018,11 +3126,27 @@ fn inferenceLoop(ctx: ThreadCtx) void {
         var unload_req: ?*UnloadRequest = null;
         {
             sch.queue_mu.lockUncancelable(sch.io);
-            defer sch.queue_mu.unlock(sch.io);
+            // `complete()` may remove a cancelled/error dsv4 slot before
+            // this thread culls it. Release every queued dsv4 owner now,
+            // including entries beyond this iteration's bounded deinit batch,
+            // so no later admission can inherit its decode rings.
+            for (sch.cleanup_queue.items) |s| {
+                cleanup_released_dsv4 = releaseDsv4StateBeforeAvailability(s) or cleanup_released_dsv4;
+            }
+            var overflow_scan = sch.cleanup_overflow_head;
+            while (overflow_scan) |s| {
+                cleanup_released_dsv4 = releaseDsv4StateBeforeAvailability(s) or cleanup_released_dsv4;
+                overflow_scan = s.cleanup_next;
+            }
             while (cleanup_n < cleanup_batch.len and sch.cleanup_queue.items.len > 0) {
                 cleanup_batch[cleanup_n] = sch.cleanup_queue.orderedRemove(0);
                 cleanup_n += 1;
             }
+            cleanup_overflow = intrusiveFifoTakeAll(
+                Slot,
+                &sch.cleanup_overflow_head,
+                &sch.cleanup_overflow_tail,
+            );
             while (vision_n < vision_batch.len and sch.vision_queue.items.len > 0) {
                 vision_batch[vision_n] = sch.vision_queue.orderedRemove(0);
                 vision_n += 1;
@@ -3040,8 +3164,15 @@ fn inferenceLoop(ctx: ThreadCtx) void {
             if (sch.gen_queue.items.len > 0) {
                 gen_req = sch.gen_queue.orderedRemove(0);
             }
+            sch.queue_mu.unlock(sch.io);
         }
         for (cleanup_batch[0..cleanup_n]) |s| s.deinit();
+        while (cleanup_overflow) |s| {
+            cleanup_overflow = s.cleanup_next;
+            s.cleanup_next = null;
+            s.deinit();
+        }
+        if (cleanup_released_dsv4) _ = mlx.mlx_clear_cache();
         if (vision_n > 0 or embed_n > 0) {
             for (vision_batch[0..vision_n]) |req| runVisionEncode(sch, req);
             for (embed_batch[0..embed_n]) |req| runEmbedRequest(sch, req);
@@ -3057,7 +3188,7 @@ fn inferenceLoop(ctx: ThreadCtx) void {
         {
             sch.queue_mu.lockUncancelable(sch.io);
             defer sch.queue_mu.unlock(sch.io);
-            while (sch.pending.items.len == 0 and sch.decoding.items.len == 0 and sch.vision_queue.items.len == 0 and sch.embed_queue.items.len == 0 and sch.cleanup_queue.items.len == 0 and sch.load_queue.items.len == 0 and sch.gen_queue.items.len == 0 and sch.unload_queue.items.len == 0 and !sch.shutdown.load(.acquire)) {
+            while (sch.pending.items.len == 0 and sch.decoding.items.len == 0 and sch.vision_queue.items.len == 0 and sch.embed_queue.items.len == 0 and sch.cleanup_queue.items.len == 0 and sch.cleanup_overflow_head == null and sch.load_queue.items.len == 0 and sch.gen_queue.items.len == 0 and sch.unload_queue.items.len == 0 and !sch.shutdown.load(.acquire)) {
                 sch.queue_cond.waitUncancelable(sch.io, &sch.queue_mu);
             }
             if (sch.shutdown.load(.acquire)) break;
@@ -3077,8 +3208,12 @@ fn inferenceLoop(ctx: ThreadCtx) void {
             var live_buf: [32]AdmitCand = undefined;
             var n_live: usize = 0;
             for (sch.decoding.items) |s| {
-                if (s.cancelled.load(.acquire) or s.finished or s.error_code != null) continue;
                 if (!modelExclusiveDecode(s.model)) continue;
+                // A cancellation can arrive after the previous cull. Keep
+                // its native DSV4 reservation live until cull releases it;
+                // otherwise a pending sibling can rebuild its module state
+                // before the old owner has retired it.
+                if (!dsv4StateOwnedBySlot(s)) continue;
                 if (n_live >= live_buf.len) break;
                 live_buf[n_live] = .{ .model = @intFromPtr(s.model), .exclusive = true };
                 n_live += 1;
@@ -3089,10 +3224,19 @@ fn inferenceLoop(ctx: ThreadCtx) void {
                 cand_buf[i] = .{ .model = @intFromPtr(s.model), .exclusive = modelExclusiveDecode(s.model) };
             }
             var admit_idx: [to_prefill.len]usize = undefined;
-            const n_admit = admitPendingTick(cand_buf[0..n_cands], live_buf[0..n_live], &admit_idx);
-            for (admit_idx[0..n_admit]) |idx| {
-                to_prefill[n_prefill] = sch.pending.items[idx];
+            const n_candidates_admitted = admitPendingTick(cand_buf[0..n_cands], live_buf[0..n_live], &admit_idx);
+            var n_admit: usize = 0;
+            for (admit_idx[0..n_candidates_admitted]) |idx| {
+                const slot = sch.pending.items[idx];
+                // Claim before prefill, not at cleanup: a pending slot that
+                // was never admitted has no authority over this model's
+                // shared rings, and an error after state allocation still
+                // has an owner to release.
+                if (modelExclusiveDecode(slot.model) and !claimDsv4StateForSlot(slot)) continue;
+                to_prefill[n_prefill] = slot;
                 n_prefill += 1;
+                admit_idx[n_admit] = idx;
+                n_admit += 1;
             }
             // Remove admitted entries in DESCENDING index order so the
             // earlier (ascending) indices stay valid during removal.
@@ -3126,6 +3270,7 @@ fn inferenceLoop(ctx: ThreadCtx) void {
                         continue;
                     }
                     log.err("[scheduler] prefill failed for slot: {s}\n", .{@errorName(err)});
+                    if (releaseDsv4StateBeforeAvailability(slot)) _ = mlx.mlx_clear_cache();
                     slot.markError(@errorName(err));
                     continue;
                 };
@@ -3138,6 +3283,7 @@ fn inferenceLoop(ctx: ThreadCtx) void {
                 sch.queue_mu.lockUncancelable(sch.io);
                 sch.decoding.append(sch.allocator, slot) catch |err| {
                     sch.queue_mu.unlock(sch.io);
+                    if (releaseDsv4StateBeforeAvailability(slot)) _ = mlx.mlx_clear_cache();
                     slot.markError(@errorName(err));
                     continue;
                 };
@@ -3174,18 +3320,25 @@ fn inferenceLoop(ctx: ThreadCtx) void {
         // 5. Cull finished / errored / cancelled from `decoding`. The slot
         //    still belongs to its connection thread until that thread calls
         //    `complete`; we just stop touching it.
+        var culled_released_dsv4 = false;
         {
             sch.queue_mu.lockUncancelable(sch.io);
-            defer sch.queue_mu.unlock(sch.io);
             var i: usize = 0;
             while (i < sch.decoding.items.len) {
                 const s = sch.decoding.items[i];
                 const drop = s.cancelled.load(.acquire) or s.finished or s.error_code != null;
                 if (drop) {
+                    // A cancelled/error slot can be culled before its
+                    // connection thread reaches complete(). Release the
+                    // shared DSV4 rings here, after this tick quiesced and
+                    // before the next loop admits another exclusive slot.
+                    culled_released_dsv4 = releaseDsv4StateBeforeAvailability(s) or culled_released_dsv4;
                     _ = sch.decoding.orderedRemove(i);
                 } else i += 1;
             }
+            sch.queue_mu.unlock(sch.io);
         }
+        if (culled_released_dsv4) _ = mlx.mlx_clear_cache();
     }
 }
 
@@ -3523,6 +3676,7 @@ fn runUnloadRequest(sch: *Scheduler, req: *UnloadRequest) void {
 fn commitSlotIfApplicable(sch: *Scheduler, slot: *Slot) void {
     // Phase D: per-model prefix cache — read off the slot's LoadedModel.
     const hc: *prefix_cache_mod.HotPrefixCache = if (slot.model.prefix_cache) |*p| p else return;
+    if (slot.cancelled.load(.acquire)) return;
     if (slot.was_pad_only) return;
     if (slot.error_code != null) return;
     if (slot.vision_embeddings != null) return;
@@ -3592,12 +3746,65 @@ pub fn loopStopReason(generated_ids: []const u32) ?[]const u8 {
     return null;
 }
 
+/// Native dsv4 keeps its decode rings on the shared model rather than the
+/// slot. The scheduler's exclusive-admission rule makes this safe while the
+/// request is live, but the state must be dropped before completion is
+/// broadcast: the next request otherwise reaches admission while the prior
+/// rings are still live, and only frees them after its allocation preflight.
+/// The caller clears the allocator cache only when this dropped live state.
+fn isNativeDsv4Slot(slot: *const Slot) bool {
+    const xfm = slot.model.transformer orelse return false;
+    return xfm.dsv4 != null;
+}
+
+fn dsv4OwnerToken(slot: *const Slot) usize {
+    return @intFromPtr(slot);
+}
+
+fn claimDsv4StateForSlot(slot: *Slot) bool {
+    const xfm = slot.model.transformer orelse return false;
+    const mdl = xfm.dsv4 orelse return false;
+    return mdl.claimDecodeStateOwner(dsv4OwnerToken(slot));
+}
+
+fn dsv4StateOwnedBySlot(slot: *const Slot) bool {
+    const xfm = slot.model.transformer orelse return false;
+    const mdl = xfm.dsv4 orelse return false;
+    return mdl.decodeStateOwnedBy(dsv4OwnerToken(slot));
+}
+
+fn releaseDsv4StateBeforeAvailability(slot: *Slot) bool {
+    const xfm = slot.model.transformer orelse return false;
+    const mdl = xfm.dsv4 orelse return false;
+    return mdl.releaseDecodeStateOwnedBy(dsv4OwnerToken(slot));
+}
+
+/// A DSpark result has already appended its entire verified prefix to the
+/// generator. If the client cancels while that prefix is being streamed, the
+/// hot-cache record must contain only what became visible before teardown.
+fn dsparkVisibleGeneratedLen(total_generated: usize, result_len: usize, emitted: usize) usize {
+    std.debug.assert(total_generated >= result_len and emitted <= result_len);
+    return total_generated - result_len + emitted;
+}
+
+test "cancelled dsv4 result retains only its emitted generated prefix" {
+    try testing.expectEqual(@as(usize, 8), dsparkVisibleGeneratedLen(12, 4, 0));
+    try testing.expectEqual(@as(usize, 10), dsparkVisibleGeneratedLen(12, 4, 2));
+    try testing.expectEqual(@as(usize, 12), dsparkVisibleGeneratedLen(12, 4, 4));
+}
+
 fn finishSlot(sch: *Scheduler, slot: *Slot, reason: []const u8) void {
     // Emit the `[spec-stats]` summary (no-op for non-speculative slots).
     // The legacy generate() path logs this itself; scheduler-driven slots
     // finalize here instead.
     if (slot.legacy_gen) |*g| g.logSpecStats();
     commitSlotIfApplicable(sch, slot);
+    // The hot-cache commit has consumed the slot-local cache. dsv4's larger
+    // module-owned rings are no longer needed, so free them before waking the
+    // connection thread; it may submit the next exclusive request immediately.
+    const native_dsv4 = isNativeDsv4Slot(slot);
+    const released_dsv4 = releaseDsv4StateBeforeAvailability(slot);
+    if (released_dsv4) _ = mlx.mlx_clear_cache();
     // SSD flush runs AFTER markFinished so the client never waits on the
     // chunk-append — but everything it needs must be captured BEFORE the
     // broadcast: the conn thread may complete()+free the slot immediately.
@@ -3633,7 +3840,7 @@ fn finishSlot(sch: *Scheduler, slot: *Slot, reason: []const u8) void {
     // MLX parks freed buffers in a size-keyed pool rather than releasing them —
     // so without this a short turn hands everything it stranded to the next one
     // and the process footprint ratchets across a session (issue #110).
-    _ = mlx.mlx_clear_cache();
+    if (!native_dsv4) _ = mlx.mlx_clear_cache();
 }
 
 /// ds4 prefill: create a session sized to the configured ctx and sync it to
@@ -4311,17 +4518,25 @@ fn runSingleDecodeTick(sch: *Scheduler, slot: *Slot) !void {
         gen.dspark_enabled,
     );
     if (tick_mode == .dspark) {
+        if (slot.cancelled.load(.acquire)) {
+            finishSlot(sch, slot, "cancelled");
+            return;
+        }
         const result = try gen.nextDspark(slot.allocator);
         if (result == null) {
             finishSlot(sch, slot, gen.finish_reason);
             return;
         }
         defer slot.allocator.free(result.?.tokens);
-        const generated_before = gen.generated_ids.items.len - result.?.tokens.len;
         var emitted: usize = 0;
         for (result.?.tokens) |t| {
-            if (slot.cancelled.load(.acquire)) return;
+            if (slot.cancelled.load(.acquire)) {
+                gen.generated_ids.shrinkRetainingCapacity(dsparkVisibleGeneratedLen(gen.generated_ids.items.len, result.?.tokens.len, emitted));
+                finishSlot(sch, slot, "cancelled");
+                return;
+            }
             if (generate_mod.isEosId(t, slot.eos_token_ids)) {
+                gen.generated_ids.shrinkRetainingCapacity(dsparkVisibleGeneratedLen(gen.generated_ids.items.len, result.?.tokens.len, emitted));
                 finishSlot(sch, slot, "stop");
                 return;
             }
@@ -4329,7 +4544,13 @@ fn runSingleDecodeTick(sch: *Scheduler, slot: *Slot) !void {
             slot.completion_tokens += 1;
             if (t != 0) slot.was_pad_only = false;
             emitted += 1;
-            if (loopStopReason(gen.generated_ids.items[0 .. generated_before + emitted])) |reason| {
+            const visible_len = dsparkVisibleGeneratedLen(gen.generated_ids.items.len, result.?.tokens.len, emitted);
+            if (loopStopReason(gen.generated_ids.items[0..visible_len])) |reason| {
+                // DSpark has already built and committed the full verified
+                // prefix. This terminal path releases its module state below,
+                // but the hot-cache commit must also see only what reached the
+                // client, never the accepted suffix beyond this loop cut.
+                gen.generated_ids.shrinkRetainingCapacity(visible_len);
                 finishSlot(sch, slot, reason);
                 return;
             }
@@ -4337,6 +4558,10 @@ fn runSingleDecodeTick(sch: *Scheduler, slot: *Slot) !void {
                 finishSlot(sch, slot, "length");
                 return;
             }
+        }
+        if (result.?.finish_after_emit) {
+            finishSlot(sch, slot, gen.finish_reason);
+            return;
         }
         return;
     }
