@@ -714,7 +714,13 @@ pub const Dsv4Model = struct {
     // DSpark draft stages (0 = checkpoint ships none / disabled). Stage i
     // lives at dw.layers/hl/wo_a_deq index n_layers + i.
     n_mtp: usize,
+    /// Checkpoint-advertised maximum. State anchors and public bounds remain
+    /// sized to this value even when the experimental runtime cap is active.
     ds_block: usize,
+    /// Load-time draft width selected by MLX_SERVE_DSPARK_BLOCK_CAP. This is
+    /// consumed only by dsparkDraft; draft.len carries the actual width through
+    /// verification and commit. Equal to ds_block unless explicitly capped.
+    ds_block_effective: usize,
     ds_noise: u32,
     ds_rank: usize,
     ds_targets: [8]u8,
@@ -749,6 +755,9 @@ pub const Dsv4Model = struct {
     ds_join_verify_eval_logged: std.atomic.Value(bool) = .init(false),
     /// Per-round cost audit, armed by `MLX_SERVE_DSPARK_PROFILE` at load.
     ds_prof: ?DsparkProfile = null,
+    /// Profile report cadence. Defaults to 16 shipping rounds; diagnostics may
+    /// lower it without adding any graph eval or changing the measured path.
+    ds_prof_every: u64 = 16,
     /// Scratch laps written by the last `extendChunk` (profiling only): the
     /// trunk layer loop vs the vocab head, so a round can attribute its
     /// verify. The head is the M=B+1 lane — the shape MLX serves worst.
@@ -1243,6 +1252,12 @@ pub fn initModel(gpa: std.mem.Allocator, cfg: *const ModelConfig, dw: Dsv4Weight
             log.warn("dsv4: DSpark DISABLED — trunk {d} MB + stages {d} MB + headroom {d} MB exceed the {d} MB working-set budget; serving serial. MLX_SERVE_DSV4_DSPARK=force overrides\n", .{ trunk.bytes / mb, stages.bytes / mb, DSPARK_MEM_HEADROOM / mb, max_rec / mb });
         }
     }
+    const ds_block: usize = cfg.dsv4_dspark_block_size;
+    const ds_block_effective = if (dspark_on) dsparkBlockCapFromEnv(ds_block) else ds_block;
+    if (ds_block_effective < ds_block) {
+        log.info("dsv4: DSpark block cap engaged (effective={d}, configured={d})\n", .{ ds_block_effective, ds_block });
+    }
+
     return .{
         .dw = dw,
         .hl = hl,
@@ -1296,7 +1311,8 @@ pub fn initModel(gpa: std.mem.Allocator, cfg: *const ModelConfig, dw: Dsv4Weight
         .yarn_bs = cfg.yarn_beta_slow,
         .plain_theta = cfg.rope_theta,
         .n_mtp = if (dspark_on) dw.layers.len - n_layers else 0,
-        .ds_block = cfg.dsv4_dspark_block_size,
+        .ds_block = ds_block,
+        .ds_block_effective = ds_block_effective,
         .ds_noise = cfg.dsv4_dspark_noise_token_id,
         .ds_rank = cfg.dsv4_dspark_markov_rank,
         .ds_targets = cfg.dsv4_dspark_target_layers,
@@ -1310,7 +1326,45 @@ pub fn initModel(gpa: std.mem.Allocator, cfg: *const ModelConfig, dw: Dsv4Weight
         .ds_hc_head_scale = if (dspark_on) try toHostF32(a, dw.dspark.?.hc_head_scale, 1, s) else &.{},
         .ds_conf_thr = dsparkConfThreshold(),
         .ds_prof = if (dspark_on and std.c.getenv("MLX_SERVE_DSPARK_PROFILE") != null) DsparkProfile{} else null,
+        .ds_prof_every = dsparkProfileReportEvery(),
     };
+}
+
+/// Exact, default-off DSpark width cap. Only positive widths no greater than
+/// the checkpoint's configured block are accepted; every other spelling keeps
+/// the configured width. Kept pure so malformed environment cases are tested
+/// without mutating process-global state.
+fn dsparkBlockCap(configured: usize, raw: ?[]const u8) usize {
+    const text = raw orelse return configured;
+    const parsed = std.fmt.parseUnsigned(usize, text, 10) catch return configured;
+    if (parsed == 0 or parsed > configured) return configured;
+    return parsed;
+}
+
+fn dsparkBlockCapFromEnv(configured: usize) usize {
+    const raw: ?[]const u8 = if (std.c.getenv("MLX_SERVE_DSPARK_BLOCK_CAP")) |value|
+        std.mem.span(value)
+    else
+        null;
+    return dsparkBlockCap(configured, raw);
+}
+
+test "dsv4: DSpark block cap accepts only bounded positive widths" {
+    try testing.expectEqual(@as(usize, 5), dsparkBlockCap(5, null));
+    try testing.expectEqual(@as(usize, 1), dsparkBlockCap(5, "1"));
+    try testing.expectEqual(@as(usize, 2), dsparkBlockCap(5, "2"));
+    try testing.expectEqual(@as(usize, 5), dsparkBlockCap(5, "5"));
+    try testing.expectEqual(@as(usize, 5), dsparkBlockCap(5, ""));
+    try testing.expectEqual(@as(usize, 5), dsparkBlockCap(5, "garbage"));
+    try testing.expectEqual(@as(usize, 5), dsparkBlockCap(5, "0"));
+    try testing.expectEqual(@as(usize, 5), dsparkBlockCap(5, "6"));
+    try testing.expectEqual(@as(usize, 0), dsparkBlockCap(0, "1"));
+}
+
+fn dsparkProfileReportEvery() u64 {
+    const raw = std.c.getenv("MLX_SERVE_DSPARK_PROFILE_EVERY") orelse return 16;
+    const parsed = std.fmt.parseUnsigned(u64, std.mem.span(raw), 10) catch return 16;
+    return std.math.clamp(parsed, 1, 1024);
 }
 
 /// Confidence gate, in the reference implementation's own units: the env var
@@ -3771,6 +3825,42 @@ test "dsv4: DSpark draft matches the oracle (DSV4_MINI)" {
                 for (fast.ids, want_ids) |got, want| try testing.expectEqual(@as(u32, @intCast(want.integer)), got);
             }
 
+            // The runtime cap changes the non-causal draft block's math, so it
+            // cannot reuse the full-width oracle fixture. At one stable prefix,
+            // pin the cap's narrower ownership/shape contract and the exact
+            // legacy-vs-GPU-ID seam from the same unchanged decode state.
+            if (i == 6 and mdl.ds_block > 1) {
+                const configured_width = mdl.ds_block_effective;
+                const capped_width = @min(@as(usize, 2), mdl.ds_block);
+                mdl.ds_block_effective = capped_width;
+                dsparkGpuMarkovIdsSetForTest(&mdl, false);
+                defer {
+                    mdl.ds_block_effective = configured_width;
+                    dsparkGpuMarkovIdsSetForTest(&mdl, null);
+                }
+
+                var capped_legacy = try dsparkDraft(&mdl, allocator, &st, trunk_tok);
+                defer capped_legacy.deinit(allocator);
+                try testing.expectEqual(capped_width, capped_legacy.len);
+                try testing.expectEqual(capped_width + 1, capped_legacy.ids.len);
+                try testing.expectEqual(capped_width, capped_legacy.confidence.len);
+                try testing.expectEqual(capped_width * mdl.vocab, capped_legacy.logits.len);
+                try testing.expect(std.meta.eql(state_before, fingerprintDecodeState(&st)));
+
+                if (use_gpu) {
+                    dsparkGpuMarkovIdsSetForTest(&mdl, true);
+                    const capped_fast_result = dsparkDraft(&mdl, allocator, &st, trunk_tok);
+                    dsparkGpuMarkovIdsSetForTest(&mdl, false);
+                    var capped_fast = try capped_fast_result;
+                    defer capped_fast.deinit(allocator);
+                    try testing.expectEqual(@as(usize, 0), capped_fast.logits.len);
+                    try testing.expectEqual(capped_legacy.len, capped_fast.len);
+                    try testing.expectEqualSlices(u32, capped_legacy.ids, capped_fast.ids);
+                    try testing.expectEqualSlices(u8, std.mem.sliceAsBytes(capped_legacy.confidence), std.mem.sliceAsBytes(capped_fast.confidence));
+                    try testing.expect(std.meta.eql(state_before, fingerprintDecodeState(&st)));
+                }
+            }
+
             // Strictness ladder: at i=6 (ring pre-window-wrap, minimal state
             // drift) the CPU arm pins the whole pipeline — cos ≥ 0.99, ids
             // EXACT, confidence within 0.1 (it reads the UN-normalized
@@ -4190,7 +4280,7 @@ test "dsv4: the confidence gate truncates the block without changing tokens (DSV
     defer _ = mlx.mlx_stream_free(s);
     var mdl = try initModel(allocator, &cfg, dw, s);
     defer mdl.deinit();
-    const B: usize = mdl.ds_block;
+    const B: usize = mdl.ds_block_effective;
 
     var rng = std.Random.DefaultPrng.init(4242);
     var prefix: [10]u32 = undefined;
@@ -10412,7 +10502,7 @@ pub fn dsparkDraft(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, 
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
     const a = arena.allocator();
-    const B = m.ds_block;
+    const B = m.ds_block_effective;
     const bc: c_int = @intCast(B);
     const d = m.dim;
     const hcm = m.hc;
@@ -11010,7 +11100,7 @@ pub fn dsparkFinish(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState,
 pub fn dsparkObserve(m: *Dsv4Model, ph: DsparkPhases) void {
     if (m.ds_prof) |*p| {
         p.observe(ph);
-        if (p.rounds % 16 == 0) p.report();
+        if (p.rounds % m.ds_prof_every == 0) p.report();
     }
 }
 
