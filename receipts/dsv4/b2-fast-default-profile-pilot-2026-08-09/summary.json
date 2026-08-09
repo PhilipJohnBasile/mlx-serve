@@ -1,0 +1,100 @@
+{
+  "arms": {
+    "B2": {
+      "completion_tokens": 16,
+      "metrics_decode_seconds_total": 5.505611458000001,
+      "metrics_decode_tokens_per_second": 2.9061258902952534,
+      "metrics_ttft_seconds_mean": 0.297500667,
+      "metrics_ttft_seconds_total": 0.297500667,
+      "name": "dspark_gpu_markov_ids_block_cap_2_fast_defaults",
+      "response_predicted_ms_mean": 5576.397,
+      "samples": 1,
+      "wall_seconds_total": 5.875134042,
+      "wall_tokens_per_second": 2.7233421204724233
+    },
+    "S": {
+      "completion_tokens": 16,
+      "metrics_decode_seconds_total": 1.104475835,
+      "metrics_decode_tokens_per_second": 14.486509793127345,
+      "metrics_ttft_seconds_mean": 0.297812542,
+      "metrics_ttft_seconds_total": 0.297812542,
+      "name": "plain_serial",
+      "response_predicted_ms_mean": 1108.123,
+      "samples": 1,
+      "wall_seconds_total": 1.406983667,
+      "wall_tokens_per_second": 11.371844873022253
+    }
+  },
+  "comparability": {
+    "b2_dspark_profile_every": 1,
+    "comparison_receipt": null,
+    "cross_arm_output_equivalence": "exact match across all required arms: S,B2",
+    "cross_arm_speed_scope": "B2 phase profiling every 1 round(s); timing is diagnostic, not a symmetric speed comparison; same-receipt one-pass pilot; directional timing only",
+    "effective_request_config": {
+      "enable_drafter": false,
+      "enable_mtp_by_arm": {
+        "B2": true,
+        "G": true,
+        "J": true,
+        "L": true,
+        "S": false
+      },
+      "enable_pld": false,
+      "endpoint": "/v1/chat/completions",
+      "max_tokens": 16,
+      "model": "dspark-lite-A",
+      "stream": false,
+      "temperature": 0,
+      "top_p": 1
+    },
+    "same_binary": true,
+    "same_model_directory": true,
+    "same_prompt": true,
+    "selected_arms": [
+      "S",
+      "B2"
+    ],
+    "speed_reported_only_after_exact_output_contract_match": true
+  },
+  "output_arm_coverage": {
+    "canonical_baseline_arms": [
+      "S",
+      "B2"
+    ],
+    "comparison_receipt_arms": [],
+    "complete_for_required_arms": true,
+    "covered_arms": [
+      "S",
+      "B2"
+    ],
+    "current_receipt_arms": [
+      "S",
+      "B2"
+    ],
+    "missing_required_arms": [],
+    "required_arms": [
+      "S",
+      "B2"
+    ],
+    "selected_current_receipt_arms": [
+      "S",
+      "B2"
+    ]
+  },
+  "output_contract_sha256": "f6767e96b28f4c34cf82bff43a29886bb0f2335f1e25a8e107d96f72c7685b81",
+  "receipt_dir": "receipts/dsv4/b2-fast-default-profile-pilot-2026-08-09",
+  "schedule": {
+    "complete_frozen_schedule": true,
+    "counterbalanced": false,
+    "expected_orders": [
+      "SB2"
+    ],
+    "label": "one-pass pilot",
+    "measurements_complete": true,
+    "mode": "pilot",
+    "observed_orders": [
+      "SB2"
+    ],
+    "position_balanced": false
+  }
+}
