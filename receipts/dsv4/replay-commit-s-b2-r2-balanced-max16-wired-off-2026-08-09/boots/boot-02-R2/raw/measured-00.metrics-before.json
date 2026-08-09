@@ -1,0 +1,191 @@
+{
+  "counters": {
+    "generation_tokens_total": 16,
+    "prefill_tokens_total": 50,
+    "prefix_cache_hits_total": 0,
+    "prefix_cache_queries_total": 1,
+    "prefix_cache_tokens_total": 0,
+    "prompt_tokens_total": 50,
+    "requests_cancelled_total": 0,
+    "requests_success_total": 1
+  },
+  "gauges": {
+    "generation_tokens_live": 4,
+    "gpu_utilization_pct": 70,
+    "memory_mb": 114159,
+    "mlx_active_bytes": 115587564440,
+    "mlx_cache_bytes": 38479086,
+    "prefill_tokens_live": 0,
+    "requests_prefilling": 0,
+    "requests_running": 1,
+    "requests_waiting": 0
+  },
+  "histograms": {
+    "decode_time_seconds": {
+      "bounds": [
+        0.01,
+        0.025,
+        0.05,
+        0.1,
+        0.25,
+        0.5,
+        1,
+        2.5,
+        5,
+        10
+      ],
+      "bucket_counts": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        1,
+        1
+      ],
+      "count": 1,
+      "sum": 4.3823757080000005
+    },
+    "e2e_request_latency_seconds": {
+      "bounds": [
+        0.01,
+        0.025,
+        0.05,
+        0.1,
+        0.25,
+        0.5,
+        1,
+        2.5,
+        5,
+        10
+      ],
+      "bucket_counts": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "count": 1,
+      "sum": 13.339766500000001
+    },
+    "output_tokens": {
+      "bounds": [
+        32,
+        128,
+        256,
+        512,
+        1024,
+        2048,
+        4096,
+        8192
+      ],
+      "bucket_counts": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "count": 1,
+      "sum": 16
+    },
+    "prefill_time_seconds": {
+      "bounds": [
+        0.01,
+        0.025,
+        0.05,
+        0.1,
+        0.25,
+        0.5,
+        1,
+        2.5,
+        5,
+        10
+      ],
+      "bucket_counts": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        1
+      ],
+      "count": 1,
+      "sum": 8.957384917
+    },
+    "prompt_tokens": {
+      "bounds": [
+        32,
+        128,
+        256,
+        512,
+        1024,
+        2048,
+        4096,
+        8192
+      ],
+      "bucket_counts": [
+        0,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "count": 1,
+      "sum": 50
+    },
+    "time_to_first_token_seconds": {
+      "bounds": [
+        0.01,
+        0.025,
+        0.05,
+        0.1,
+        0.25,
+        0.5,
+        1,
+        2.5,
+        5,
+        10
+      ],
+      "bucket_counts": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        1
+      ],
+      "count": 1,
+      "sum": 8.957390792
+    }
+  }
+}

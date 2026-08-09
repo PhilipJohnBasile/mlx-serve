@@ -1,0 +1,464 @@
+[
+  {
+    "arm": "S",
+    "arm_name": "plain_serial",
+    "balanced_order": "SB2R2",
+    "boot_id": "boot-00-S",
+    "engagement": {
+      "block_cap_b2_marker_count": 0,
+      "dspark_profile_marker_count": 0,
+      "dspark_profile_required": false,
+      "expected_dspark_stats": 0,
+      "gpu_markov_marker_count": 0,
+      "joined_verify_marker_count": 0,
+      "replay_commit_marker_count": 0,
+      "spec_stats_count": 0
+    },
+    "measurements": [
+      {
+        "metrics_histogram_delta": {
+          "available": true,
+          "histograms": {
+            "decode_time_seconds": {
+              "count": 1,
+              "sum_seconds": 0.47538633300000005
+            },
+            "time_to_first_token_seconds": {
+              "count": 1,
+              "sum_seconds": 0.28664975000000015
+            }
+          }
+        },
+        "output_contract": {
+          "completion_tokens": 16,
+          "content": "Here are four concise, actionable improvements for speculative decoding while preserving exact greedy-token",
+          "finish_reason": "length"
+        },
+        "output_contract_sha256": "f6767e96b28f4c34cf82bff43a29886bb0f2335f1e25a8e107d96f72c7685b81",
+        "raw": {
+          "metrics_after": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-00-S/raw/measured-00.metrics-after.json",
+          "metrics_before": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-00-S/raw/measured-00.metrics-before.json",
+          "response": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-00-S/raw/measured-00.response.json"
+        },
+        "request_id": "measured-00",
+        "timings": {
+          "cached_n": 0,
+          "predicted_ms": 478.496,
+          "predicted_n": 16,
+          "predicted_per_second": 33.438,
+          "prompt_ms": 286.644,
+          "prompt_n": 50,
+          "prompt_per_second": 174.432,
+          "tokenize_ms": 0.332
+        },
+        "usage": {
+          "completion_tokens": 16,
+          "prompt_tokens": 50,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "total_tokens": 66
+        },
+        "wall_seconds": 0.76605775
+      }
+    ],
+    "order_index": 0,
+    "order_position": 0,
+    "pid": 75400,
+    "port": 33399,
+    "selected_order": "SB2R2",
+    "selected_order_position": 0,
+    "server_log": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-00-S/server.log",
+    "server_log_tail": "[mem] MLX buffer-pool cap 8192 MB (was 124518 MB)\nLogging to /Users/pjb/.mlx-serve/logs/mlx-serve-33399.log (rotates at 32 MB)\nmlx-serve 26.8.1 (MLX 0.32.0)\n[args] model: /private/tmp/dspark-lite-A\n[args] drafter: <none>\n[args] serve: 127.0.0.1:33399, ctx-size=12288, pld=off, no-vision=false\n[args] kv-quant: off\n[args] kv-attn-mode: auto\nMetal GPU: true\nModel: deepseek_v4 (43 layers, 4096-dim, head_dim=512, 64h/1kv, 8-bit affine quant)\nLoading tokenizer...\n  parsed tokenizer (6 MB) in 18ms\n  loaded 128000 vocab entries in 2ms\n  loaded 127741 merges in 3ms\nTokenizer loaded: 129280 vocab, 127741 merges, 1283 special tokens (byte-level BPE)\n[registry] max_resident_models=3, max_resident_mem=95.3 GB\nLoading model-layer-23.safetensors...\nLoading model-layer-11.safetensors...\nLoading model-layer-7.safetensors...\nLoading model-layer-36.safetensors...\nLoading model-layer-18.safetensors...\nLoading model-layer-2.safetensors...\nLoading model-layer-33.safetensors...\nLoading model-layer-26.safetensors...\nLoading model-layer-14.safetensors...\nLoading model-mtp.safetensors...\nLoading model-layer-39.safetensors...\nLoading model-layer-17.safetensors...\nLoading model-layer-8.safetensors...\nLoading model-layer-25.safetensors...\nLoading model-layer-40.safetensors...\nLoading model-layer-30.safetensors...\nLoading model-top.safetensors...\nLoading model-layer-1.safetensors...\nLoading model-layer-35.safetensors...\nLoading model-layer-4.safetensors...\nLoading model-layer-29.safetensors...\nLoading model-layer-12.safetensors...\nLoading model-layer-20.safetensors...\nLoading model-layer-15.safetensors...\nLoading model-layer-27.safetensors...\nLoading model-layer-32.safetensors...\nLoading model-layer-42.safetensors...\nLoading model-layer-3.safetensors...\nLoading model-layer-37.safetensors...\nLoading model-layer-19.safetensors...\nLoading model-layer-6.safetensors...\nLoading model-layer-10.safetensors...\nLoading model-layer-22.safetensors...\nLoading model-layer-21.safetensors...\nLoading model-layer-13.safetensors...\nLoading model-layer-28.safetensors...\nLoading model-layer-5.safetensors...\nLoading model-layer-34.safetensors...\nLoading model-layer-0.safetensors...\nLoading model-layer-31.safetensors...\nLoading model-layer-41.safetensors...\nLoading model-layer-24.safetensors...\nLoading model-layer-9.safetensors...\nLoading model-layer-38.safetensors...\nLoading model-layer-16.safetensors...\nLoaded 2469 weights from 45 file(s)\ndsv4: DSpark stages present but OFF by default (stages stay lazy at zero cost; pass --dspark to enable)\n[wired] mode=off limit=0 MB\ndsv4: wo_a batched-qmm path engaged\ndsv4: GPU MoE routing engaged\ndsv4: GPU window emission engaged\ndsv4: fused emission kernel engaged\nWarmup complete (39295 ms).\nModel ready (loaded on inference thread).\nPrometheus metrics: ENABLED \u2014 GET http://127.0.0.1:33399/metrics (live panel at GET /)\nContext size: 12288 tokens (manual)\nModel context length: 1048576 tokens\nReasoning budget: unlimited\n\nServer listening on http://127.0.0.1:33399\n  GET  /\n  GET  /health\n  GET  /props\n  GET  /v1/models\n  POST /v1/chat/completions\n  POST /v1/completions\n  POST /v1/embeddings\n  POST /v1/messages (Anthropic)\n  POST /v1/responses (OpenAI Responses)\n  POST /v1/responses/compact\n  GET  /v1/responses/{id}\n  DEL  /v1/responses/{id}\n  POST /tokenize\n  POST /detokenize\n\nRSS: 22.5G  Mem: 76%  CPU: 14%  GPU: 0%\nPOST /v1/chat/completions (1 msgs, max_tokens=16, temp=0.00, top_p=1.00, top_k=0, stream=false, thinking=false, sys=0b, user=257b, tools=0b, tool_msgs=0) \n  > \"You are reviewing a local inference engine. In four concise bullets, explain how...\"\n  prompt=50 tokens, max_gen=16, ctx=12288\ndsv4: lazy pipelined decode engaged\ndsv4: fused sinkhorn+collapse kernel engaged\ndsv4: fused decode-chain kernel engaged\ndsv4: fused hc_post kernel engaged\n  <- 50+16 tokens (1487ms) [prefill: 50.7 tok/s, decode: 31.9 tok/s] [length]\nPOST /v1/chat/completions (1 msgs, max_tokens=16, temp=0.00, top_p=1.00, top_k=0, stream=false, thinking=false, sys=0b, user=257b, tools=0b, tool_msgs=0) \n  > \"You are reviewing a local inference engine. In four concise bullets, explain how...\"\n  prompt=50 tokens, max_gen=16, ctx=12288\n  <- 50+16 tokens (765ms) [prefill: 174.4 tok/s, decode: 33.4 tok/s] [length]\n\nShutting down gracefully...\n",
+    "teardown": {
+      "exit_code": 0,
+      "pid": 75400,
+      "teardown_signal": "SIGTERM"
+    }
+  },
+  {
+    "arm": "B2",
+    "arm_name": "dspark_gpu_markov_ids_block_cap_2_fast_defaults",
+    "balanced_order": "SB2R2",
+    "boot_id": "boot-01-B2",
+    "engagement": {
+      "block_cap_b2_marker_count": 1,
+      "dspark_profile_marker_count": 0,
+      "dspark_profile_required": false,
+      "expected_dspark_stats": 2,
+      "gpu_markov_marker_count": 1,
+      "joined_verify_marker_count": 0,
+      "replay_commit_marker_count": 0,
+      "spec_stats_count": 2
+    },
+    "measurements": [
+      {
+        "metrics_histogram_delta": {
+          "available": true,
+          "histograms": {
+            "decode_time_seconds": {
+              "count": 1,
+              "sum_seconds": 2.2470875009999993
+            },
+            "time_to_first_token_seconds": {
+              "count": 1,
+              "sum_seconds": 1.472160208
+            }
+          }
+        },
+        "output_contract": {
+          "completion_tokens": 16,
+          "content": "Here are four concise, actionable improvements for speculative decoding while preserving exact greedy-token",
+          "finish_reason": "length"
+        },
+        "output_contract_sha256": "f6767e96b28f4c34cf82bff43a29886bb0f2335f1e25a8e107d96f72c7685b81",
+        "raw": {
+          "metrics_after": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-01-B2/raw/measured-00.metrics-after.json",
+          "metrics_before": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-01-B2/raw/measured-00.metrics-before.json",
+          "response": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-01-B2/raw/measured-00.response.json"
+        },
+        "request_id": "measured-00",
+        "timings": {
+          "cached_n": 0,
+          "predicted_ms": 2456.978,
+          "predicted_n": 16,
+          "predicted_per_second": 6.512,
+          "prompt_ms": 1472.155,
+          "prompt_n": 50,
+          "prompt_per_second": 33.964,
+          "tokenize_ms": 0.365
+        },
+        "usage": {
+          "completion_tokens": 16,
+          "prompt_tokens": 50,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "total_tokens": 66
+        },
+        "wall_seconds": 3.930031792
+      }
+    ],
+    "order_index": 0,
+    "order_position": 1,
+    "pid": 75454,
+    "port": 33400,
+    "selected_order": "SB2R2",
+    "selected_order_position": 1,
+    "server_log": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-01-B2/server.log",
+    "server_log_tail": "[mem] MLX buffer-pool cap 8192 MB (was 124518 MB)\nLogging to /Users/pjb/.mlx-serve/logs/mlx-serve-33400.log (rotates at 32 MB)\nmlx-serve 26.8.1 (MLX 0.32.0)\n[args] model: /private/tmp/dspark-lite-A\n[args] drafter: <none>\n[args] serve: 127.0.0.1:33400, ctx-size=12288, pld=off, no-vision=false\n[args] kv-quant: off\n[args] kv-attn-mode: auto\nMetal GPU: true\nModel: deepseek_v4 (43 layers, 4096-dim, head_dim=512, 64h/1kv, 8-bit affine quant)\nLoading tokenizer...\n  parsed tokenizer (6 MB) in 19ms\n  loaded 128000 vocab entries in 2ms\n  loaded 127741 merges in 3ms\nTokenizer loaded: 129280 vocab, 127741 merges, 1283 special tokens (byte-level BPE)\n[registry] max_resident_models=3, max_resident_mem=95.3 GB\nLoading model-layer-23.safetensors...\nLoading model-layer-11.safetensors...\nLoading model-layer-7.safetensors...\nLoading model-layer-36.safetensors...\nLoading model-layer-18.safetensors...\nLoading model-layer-2.safetensors...\nLoading model-layer-33.safetensors...\nLoading model-layer-26.safetensors...\nLoading model-layer-14.safetensors...\nLoading model-mtp.safetensors...\nLoading model-layer-39.safetensors...\nLoading model-layer-17.safetensors...\nLoading model-layer-8.safetensors...\nLoading model-layer-25.safetensors...\nLoading model-layer-40.safetensors...\nLoading model-layer-30.safetensors...\nLoading model-top.safetensors...\nLoading model-layer-1.safetensors...\nLoading model-layer-35.safetensors...\nLoading model-layer-4.safetensors...\nLoading model-layer-29.safetensors...\nLoading model-layer-12.safetensors...\nLoading model-layer-20.safetensors...\nLoading model-layer-15.safetensors...\nLoading model-layer-27.safetensors...\nLoading model-layer-32.safetensors...\nLoading model-layer-42.safetensors...\nLoading model-layer-3.safetensors...\nLoading model-layer-37.safetensors...\nLoading model-layer-19.safetensors...\nLoading model-layer-6.safetensors...\nLoading model-layer-10.safetensors...\nLoading model-layer-22.safetensors...\nLoading model-layer-21.safetensors...\nLoading model-layer-13.safetensors...\nLoading model-layer-28.safetensors...\nLoading model-layer-5.safetensors...\nLoading model-layer-34.safetensors...\nLoading model-layer-0.safetensors...\nLoading model-layer-31.safetensors...\nLoading model-layer-41.safetensors...\nLoading model-layer-24.safetensors...\nLoading model-layer-9.safetensors...\nLoading model-layer-38.safetensors...\nLoading model-layer-16.safetensors...\nLoaded 2469 weights from 45 file(s)\ndsv4: materialized 149 DSpark stage weight tensors (7506 MB) at load\ndsv4: DSpark block cap engaged (effective=2, configured=5)\n[wired] mode=off limit=0 MB\ndsv4: wo_a batched-qmm path engaged\ndsv4: GPU MoE routing engaged\ndsv4: GPU window emission engaged\ndsv4: fused emission kernel engaged\nWarmup complete (178078 ms).\nModel ready (loaded on inference thread).\nPrometheus metrics: ENABLED \u2014 GET http://127.0.0.1:33400/metrics (live panel at GET /)\nContext size: 12288 tokens (manual)\nModel context length: 1048576 tokens\nReasoning budget: unlimited\n\nServer listening on http://127.0.0.1:33400\n  GET  /\n  GET  /health\n  GET  /props\n  GET  /v1/models\n  POST /v1/chat/completions\n  POST /v1/completions\n  POST /v1/embeddings\n  POST /v1/messages (Anthropic)\n  POST /v1/responses (OpenAI Responses)\n  POST /v1/responses/compact\n  GET  /v1/responses/{id}\n  DEL  /v1/responses/{id}\n  POST /tokenize\n  POST /detokenize\n\nRSS: 16.4G  Mem: 80%  CPU: 14%  GPU: 0%\nPOST /v1/chat/completions (1 msgs, max_tokens=16, temp=0.00, top_p=1.00, top_k=0, stream=false, thinking=false, sys=0b, user=257b, tools=0b, tool_msgs=0) \n  > \"You are reviewing a local inference engine. In four concise bullets, explain how...\"\n  prompt=50 tokens, max_gen=16, ctx=12288\n  spec=dspark (deepseek_v4 native draft stages, block=5)\ndsv4: fused sinkhorn+collapse kernel engaged\ndsv4: fused decode-chain kernel engaged\ndsv4: fused hc_post kernel engaged\ndsv4: DSpark GPU Markov-ID path engaged (one typed ID/confidence eval; draft logits stay on device)\n  [spec-stats] mode=dspark attempts=7 accepts=9 avg_per_round=1.29\n  <- 50+16 tokens (19591ms) [prefill: 5.8 tok/s, decode: 1.5 tok/s] [length]\nPOST /v1/chat/completions (1 msgs, max_tokens=16, temp=0.00, top_p=1.00, top_k=0, stream=false, thinking=false, sys=0b, user=257b, tools=0b, tool_msgs=0) \n  > \"You are reviewing a local inference engine. In four concise bullets, explain how...\"\n  prompt=50 tokens, max_gen=16, ctx=12288\n  spec=dspark (deepseek_v4 native draft stages, block=5)\n  [spec-stats] mode=dspark attempts=7 accepts=9 avg_per_round=1.29\n  <- 50+16 tokens (3929ms) [prefill: 34.0 tok/s, decode: 6.5 tok/s] [length]\n\nShutting down gracefully...\n",
+    "teardown": {
+      "exit_code": 0,
+      "pid": 75454,
+      "teardown_signal": "SIGTERM"
+    }
+  },
+  {
+    "arm": "R2",
+    "arm_name": "dspark_gpu_markov_ids_block_cap_2_replay_commit_fast_defaults",
+    "balanced_order": "SB2R2",
+    "boot_id": "boot-02-R2",
+    "engagement": {
+      "block_cap_b2_marker_count": 1,
+      "dspark_profile_marker_count": 0,
+      "dspark_profile_required": false,
+      "expected_dspark_stats": 2,
+      "gpu_markov_marker_count": 1,
+      "joined_verify_marker_count": 0,
+      "replay_commit_marker_count": 1,
+      "spec_stats_count": 2
+    },
+    "measurements": [
+      {
+        "metrics_histogram_delta": {
+          "available": true,
+          "histograms": {
+            "decode_time_seconds": {
+              "count": 1,
+              "sum_seconds": 2.1273559989999997
+            },
+            "time_to_first_token_seconds": {
+              "count": 1,
+              "sum_seconds": 0.29166458400000117
+            }
+          }
+        },
+        "output_contract": {
+          "completion_tokens": 16,
+          "content": "Here are four concise, actionable improvements for speculative decoding while preserving exact greedy-token",
+          "finish_reason": "length"
+        },
+        "output_contract_sha256": "f6767e96b28f4c34cf82bff43a29886bb0f2335f1e25a8e107d96f72c7685b81",
+        "raw": {
+          "metrics_after": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-02-R2/raw/measured-00.metrics-after.json",
+          "metrics_before": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-02-R2/raw/measured-00.metrics-before.json",
+          "response": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-02-R2/raw/measured-00.response.json"
+        },
+        "request_id": "measured-00",
+        "timings": {
+          "cached_n": 0,
+          "predicted_ms": 2666.654,
+          "predicted_n": 16,
+          "predicted_per_second": 6.0,
+          "prompt_ms": 291.659,
+          "prompt_n": 50,
+          "prompt_per_second": 171.433,
+          "tokenize_ms": 0.556
+        },
+        "usage": {
+          "completion_tokens": 16,
+          "prompt_tokens": 50,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "total_tokens": 66
+        },
+        "wall_seconds": 2.959405958
+      }
+    ],
+    "order_index": 0,
+    "order_position": 2,
+    "pid": 75592,
+    "port": 33401,
+    "selected_order": "SB2R2",
+    "selected_order_position": 2,
+    "server_log": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-02-R2/server.log",
+    "server_log_tail": "[mem] MLX buffer-pool cap 8192 MB (was 124518 MB)\nLogging to /Users/pjb/.mlx-serve/logs/mlx-serve-33401.log (rotates at 32 MB)\nmlx-serve 26.8.1 (MLX 0.32.0)\n[args] model: /private/tmp/dspark-lite-A\n[args] drafter: <none>\n[args] serve: 127.0.0.1:33401, ctx-size=12288, pld=off, no-vision=false\n[args] kv-quant: off\n[args] kv-attn-mode: auto\nMetal GPU: true\nModel: deepseek_v4 (43 layers, 4096-dim, head_dim=512, 64h/1kv, 8-bit affine quant)\nLoading tokenizer...\n  parsed tokenizer (6 MB) in 19ms\n  loaded 128000 vocab entries in 2ms\n  loaded 127741 merges in 3ms\nTokenizer loaded: 129280 vocab, 127741 merges, 1283 special tokens (byte-level BPE)\n[registry] max_resident_models=3, max_resident_mem=95.3 GB\nLoading model-layer-23.safetensors...\nLoading model-layer-11.safetensors...\nLoading model-layer-7.safetensors...\nLoading model-layer-36.safetensors...\nLoading model-layer-18.safetensors...\nLoading model-layer-2.safetensors...\nLoading model-layer-33.safetensors...\nLoading model-layer-26.safetensors...\nLoading model-layer-14.safetensors...\nLoading model-mtp.safetensors...\nLoading model-layer-39.safetensors...\nLoading model-layer-17.safetensors...\nLoading model-layer-8.safetensors...\nLoading model-layer-25.safetensors...\nLoading model-layer-40.safetensors...\nLoading model-layer-30.safetensors...\nLoading model-top.safetensors...\nLoading model-layer-1.safetensors...\nLoading model-layer-35.safetensors...\nLoading model-layer-4.safetensors...\nLoading model-layer-29.safetensors...\nLoading model-layer-12.safetensors...\nLoading model-layer-20.safetensors...\nLoading model-layer-15.safetensors...\nLoading model-layer-27.safetensors...\nLoading model-layer-32.safetensors...\nLoading model-layer-42.safetensors...\nLoading model-layer-3.safetensors...\nLoading model-layer-37.safetensors...\nLoading model-layer-19.safetensors...\nLoading model-layer-6.safetensors...\nLoading model-layer-10.safetensors...\nLoading model-layer-22.safetensors...\nLoading model-layer-21.safetensors...\nLoading model-layer-13.safetensors...\nLoading model-layer-28.safetensors...\nLoading model-layer-5.safetensors...\nLoading model-layer-34.safetensors...\nLoading model-layer-0.safetensors...\nLoading model-layer-31.safetensors...\nLoading model-layer-41.safetensors...\nLoading model-layer-24.safetensors...\nLoading model-layer-9.safetensors...\nLoading model-layer-38.safetensors...\nLoading model-layer-16.safetensors...\nLoaded 2469 weights from 45 file(s)\ndsv4: materialized 149 DSpark stage weight tensors (7506 MB) at load\ndsv4: DSpark block cap engaged (effective=2, configured=5)\n[wired] mode=off limit=0 MB\ndsv4: wo_a batched-qmm path engaged\ndsv4: GPU MoE routing engaged\ndsv4: GPU window emission engaged\ndsv4: fused emission kernel engaged\nWarmup complete (160713 ms).\nModel ready (loaded on inference thread).\nPrometheus metrics: ENABLED \u2014 GET http://127.0.0.1:33401/metrics (live panel at GET /)\nContext size: 12288 tokens (manual)\nModel context length: 1048576 tokens\nReasoning budget: unlimited\n\nServer listening on http://127.0.0.1:33401\n  GET  /\n  GET  /health\n  GET  /props\n  GET  /v1/models\n  POST /v1/chat/completions\n  POST /v1/completions\n  POST /v1/embeddings\n  POST /v1/messages (Anthropic)\n  POST /v1/responses (OpenAI Responses)\n  POST /v1/responses/compact\n  GET  /v1/responses/{id}\n  DEL  /v1/responses/{id}\n  POST /tokenize\n  POST /detokenize\n\nRSS: 16.9G  Mem: 81%  CPU: 14%  GPU: 0%\nPOST /v1/chat/completions (1 msgs, max_tokens=16, temp=0.00, top_p=1.00, top_k=0, stream=false, thinking=false, sys=0b, user=257b, tools=0b, tool_msgs=0) \n  > \"You are reviewing a local inference engine. In four concise bullets, explain how...\"\n  prompt=50 tokens, max_gen=16, ctx=12288\n  spec=dspark (deepseek_v4 native draft stages, block=5)\ndsv4: fused sinkhorn+collapse kernel engaged\ndsv4: fused decode-chain kernel engaged\ndsv4: fused hc_post kernel engaged\ndsv4: DSpark GPU Markov-ID path engaged (one typed ID/confidence eval; draft logits stay on device)\ndsv4: DSpark replay-commit verifier engaged (GPU emissions only; retained prefix serially committed)\n  [spec-stats] mode=dspark attempts=7 accepts=9 avg_per_round=1.29\n  <- 50+16 tokens (13789ms) [prefill: 5.6 tok/s, decode: 3.3 tok/s] [length]\nPOST /v1/chat/completions (1 msgs, max_tokens=16, temp=0.00, top_p=1.00, top_k=0, stream=false, thinking=false, sys=0b, user=257b, tools=0b, tool_msgs=0) \n  > \"You are reviewing a local inference engine. In four concise bullets, explain how...\"\n  prompt=50 tokens, max_gen=16, ctx=12288\n  spec=dspark (deepseek_v4 native draft stages, block=5)\n  [spec-stats] mode=dspark attempts=7 accepts=9 avg_per_round=1.29\n  <- 50+16 tokens (2958ms) [prefill: 171.4 tok/s, decode: 6.0 tok/s] [length]\n\nShutting down gracefully...\n",
+    "teardown": {
+      "exit_code": 0,
+      "pid": 75592,
+      "teardown_signal": "SIGTERM"
+    }
+  },
+  {
+    "arm": "R2",
+    "arm_name": "dspark_gpu_markov_ids_block_cap_2_replay_commit_fast_defaults",
+    "balanced_order": "R2B2S",
+    "boot_id": "boot-03-R2",
+    "engagement": {
+      "block_cap_b2_marker_count": 1,
+      "dspark_profile_marker_count": 0,
+      "dspark_profile_required": false,
+      "expected_dspark_stats": 2,
+      "gpu_markov_marker_count": 1,
+      "joined_verify_marker_count": 0,
+      "replay_commit_marker_count": 1,
+      "spec_stats_count": 2
+    },
+    "measurements": [
+      {
+        "metrics_histogram_delta": {
+          "available": true,
+          "histograms": {
+            "decode_time_seconds": {
+              "count": 1,
+              "sum_seconds": 1.939281582
+            },
+            "time_to_first_token_seconds": {
+              "count": 1,
+              "sum_seconds": 0.28877841599999954
+            }
+          }
+        },
+        "output_contract": {
+          "completion_tokens": 16,
+          "content": "Here are four concise, actionable improvements for speculative decoding while preserving exact greedy-token",
+          "finish_reason": "length"
+        },
+        "output_contract_sha256": "f6767e96b28f4c34cf82bff43a29886bb0f2335f1e25a8e107d96f72c7685b81",
+        "raw": {
+          "metrics_after": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-03-R2/raw/measured-00.metrics-after.json",
+          "metrics_before": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-03-R2/raw/measured-00.metrics-before.json",
+          "response": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-03-R2/raw/measured-00.response.json"
+        },
+        "request_id": "measured-00",
+        "timings": {
+          "cached_n": 0,
+          "predicted_ms": 2667.2,
+          "predicted_n": 16,
+          "predicted_per_second": 5.999,
+          "prompt_ms": 288.774,
+          "prompt_n": 50,
+          "prompt_per_second": 173.146,
+          "tokenize_ms": 0.362
+        },
+        "usage": {
+          "completion_tokens": 16,
+          "prompt_tokens": 50,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "total_tokens": 66
+        },
+        "wall_seconds": 2.957163584
+      }
+    ],
+    "order_index": 1,
+    "order_position": 0,
+    "pid": 75672,
+    "port": 33402,
+    "selected_order": "R2B2S",
+    "selected_order_position": 0,
+    "server_log": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-03-R2/server.log",
+    "server_log_tail": "[mem] MLX buffer-pool cap 8192 MB (was 124518 MB)\nLogging to /Users/pjb/.mlx-serve/logs/mlx-serve-33402.log (rotates at 32 MB)\nmlx-serve 26.8.1 (MLX 0.32.0)\n[args] model: /private/tmp/dspark-lite-A\n[args] drafter: <none>\n[args] serve: 127.0.0.1:33402, ctx-size=12288, pld=off, no-vision=false\n[args] kv-quant: off\n[args] kv-attn-mode: auto\nMetal GPU: true\nModel: deepseek_v4 (43 layers, 4096-dim, head_dim=512, 64h/1kv, 8-bit affine quant)\nLoading tokenizer...\n  parsed tokenizer (6 MB) in 19ms\n  loaded 128000 vocab entries in 2ms\n  loaded 127741 merges in 3ms\nTokenizer loaded: 129280 vocab, 127741 merges, 1283 special tokens (byte-level BPE)\n[registry] max_resident_models=3, max_resident_mem=95.3 GB\nLoading model-layer-23.safetensors...\nLoading model-layer-11.safetensors...\nLoading model-layer-7.safetensors...\nLoading model-layer-36.safetensors...\nLoading model-layer-18.safetensors...\nLoading model-layer-2.safetensors...\nLoading model-layer-33.safetensors...\nLoading model-layer-26.safetensors...\nLoading model-layer-14.safetensors...\nLoading model-mtp.safetensors...\nLoading model-layer-39.safetensors...\nLoading model-layer-17.safetensors...\nLoading model-layer-8.safetensors...\nLoading model-layer-25.safetensors...\nLoading model-layer-40.safetensors...\nLoading model-layer-30.safetensors...\nLoading model-top.safetensors...\nLoading model-layer-1.safetensors...\nLoading model-layer-35.safetensors...\nLoading model-layer-4.safetensors...\nLoading model-layer-29.safetensors...\nLoading model-layer-12.safetensors...\nLoading model-layer-20.safetensors...\nLoading model-layer-15.safetensors...\nLoading model-layer-27.safetensors...\nLoading model-layer-32.safetensors...\nLoading model-layer-42.safetensors...\nLoading model-layer-3.safetensors...\nLoading model-layer-37.safetensors...\nLoading model-layer-19.safetensors...\nLoading model-layer-6.safetensors...\nLoading model-layer-10.safetensors...\nLoading model-layer-22.safetensors...\nLoading model-layer-21.safetensors...\nLoading model-layer-13.safetensors...\nLoading model-layer-28.safetensors...\nLoading model-layer-5.safetensors...\nLoading model-layer-34.safetensors...\nLoading model-layer-0.safetensors...\nLoading model-layer-31.safetensors...\nLoading model-layer-41.safetensors...\nLoading model-layer-24.safetensors...\nLoading model-layer-9.safetensors...\nLoading model-layer-38.safetensors...\nLoading model-layer-16.safetensors...\nLoaded 2469 weights from 45 file(s)\ndsv4: materialized 149 DSpark stage weight tensors (7506 MB) at load\ndsv4: DSpark block cap engaged (effective=2, configured=5)\n[wired] mode=off limit=0 MB\ndsv4: wo_a batched-qmm path engaged\ndsv4: GPU MoE routing engaged\ndsv4: GPU window emission engaged\ndsv4: fused emission kernel engaged\nWarmup complete (174889 ms).\nModel ready (loaded on inference thread).\nPrometheus metrics: ENABLED \u2014 GET http://127.0.0.1:33402/metrics (live panel at GET /)\nContext size: 12288 tokens (manual)\nModel context length: 1048576 tokens\nReasoning budget: unlimited\n\nServer listening on http://127.0.0.1:33402\n  GET  /\n  GET  /health\n  GET  /props\n  GET  /v1/models\n  POST /v1/chat/completions\n  POST /v1/completions\n  POST /v1/embeddings\n  POST /v1/messages (Anthropic)\n  POST /v1/responses (OpenAI Responses)\n  POST /v1/responses/compact\n  GET  /v1/responses/{id}\n  DEL  /v1/responses/{id}\n  POST /tokenize\n  POST /detokenize\n\nRSS: 16.8G  Mem: 80%  CPU: 14%  GPU: 0%\nPOST /v1/chat/completions (1 msgs, max_tokens=16, temp=0.00, top_p=1.00, top_k=0, stream=false, thinking=false, sys=0b, user=257b, tools=0b, tool_msgs=0) \n  > \"You are reviewing a local inference engine. In four concise bullets, explain how...\"\n  prompt=50 tokens, max_gen=16, ctx=12288\n  spec=dspark (deepseek_v4 native draft stages, block=5)\ndsv4: fused sinkhorn+collapse kernel engaged\ndsv4: fused decode-chain kernel engaged\ndsv4: fused hc_post kernel engaged\ndsv4: DSpark GPU Markov-ID path engaged (one typed ID/confidence eval; draft logits stay on device)\ndsv4: DSpark replay-commit verifier engaged (GPU emissions only; retained prefix serially committed)\n  [spec-stats] mode=dspark attempts=7 accepts=9 avg_per_round=1.29\n  <- 50+16 tokens (14252ms) [prefill: 4.6 tok/s, decode: 4.6 tok/s] [length]\nPOST /v1/chat/completions (1 msgs, max_tokens=16, temp=0.00, top_p=1.00, top_k=0, stream=false, thinking=false, sys=0b, user=257b, tools=0b, tool_msgs=0) \n  > \"You are reviewing a local inference engine. In four concise bullets, explain how...\"\n  prompt=50 tokens, max_gen=16, ctx=12288\n  spec=dspark (deepseek_v4 native draft stages, block=5)\n  [spec-stats] mode=dspark attempts=7 accepts=9 avg_per_round=1.29\n  <- 50+16 tokens (2956ms) [prefill: 173.1 tok/s, decode: 6.0 tok/s] [length]\n\nShutting down gracefully...\n",
+    "teardown": {
+      "exit_code": 0,
+      "pid": 75672,
+      "teardown_signal": "SIGTERM"
+    }
+  },
+  {
+    "arm": "B2",
+    "arm_name": "dspark_gpu_markov_ids_block_cap_2_fast_defaults",
+    "balanced_order": "R2B2S",
+    "boot_id": "boot-04-B2",
+    "engagement": {
+      "block_cap_b2_marker_count": 1,
+      "dspark_profile_marker_count": 0,
+      "dspark_profile_required": false,
+      "expected_dspark_stats": 2,
+      "gpu_markov_marker_count": 1,
+      "joined_verify_marker_count": 0,
+      "replay_commit_marker_count": 0,
+      "spec_stats_count": 2
+    },
+    "measurements": [
+      {
+        "metrics_histogram_delta": {
+          "available": true,
+          "histograms": {
+            "decode_time_seconds": {
+              "count": 1,
+              "sum_seconds": 1.951758082
+            },
+            "time_to_first_token_seconds": {
+              "count": 1,
+              "sum_seconds": 0.2904662919999996
+            }
+          }
+        },
+        "output_contract": {
+          "completion_tokens": 16,
+          "content": "Here are four concise, actionable improvements for speculative decoding while preserving exact greedy-token",
+          "finish_reason": "length"
+        },
+        "output_contract_sha256": "f6767e96b28f4c34cf82bff43a29886bb0f2335f1e25a8e107d96f72c7685b81",
+        "raw": {
+          "metrics_after": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-04-B2/raw/measured-00.metrics-after.json",
+          "metrics_before": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-04-B2/raw/measured-00.metrics-before.json",
+          "response": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-04-B2/raw/measured-00.response.json"
+        },
+        "request_id": "measured-00",
+        "timings": {
+          "cached_n": 0,
+          "predicted_ms": 2594.163,
+          "predicted_n": 16,
+          "predicted_per_second": 6.168,
+          "prompt_ms": 290.46,
+          "prompt_n": 50,
+          "prompt_per_second": 172.141,
+          "tokenize_ms": 0.464
+        },
+        "usage": {
+          "completion_tokens": 16,
+          "prompt_tokens": 50,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "total_tokens": 66
+        },
+        "wall_seconds": 2.885596875
+      }
+    ],
+    "order_index": 1,
+    "order_position": 1,
+    "pid": 75776,
+    "port": 33403,
+    "selected_order": "R2B2S",
+    "selected_order_position": 1,
+    "server_log": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-04-B2/server.log",
+    "server_log_tail": "[mem] MLX buffer-pool cap 8192 MB (was 124518 MB)\nLogging to /Users/pjb/.mlx-serve/logs/mlx-serve-33403.log (rotates at 32 MB)\nmlx-serve 26.8.1 (MLX 0.32.0)\n[args] model: /private/tmp/dspark-lite-A\n[args] drafter: <none>\n[args] serve: 127.0.0.1:33403, ctx-size=12288, pld=off, no-vision=false\n[args] kv-quant: off\n[args] kv-attn-mode: auto\nMetal GPU: true\nModel: deepseek_v4 (43 layers, 4096-dim, head_dim=512, 64h/1kv, 8-bit affine quant)\nLoading tokenizer...\n  parsed tokenizer (6 MB) in 20ms\n  loaded 128000 vocab entries in 2ms\n  loaded 127741 merges in 3ms\nTokenizer loaded: 129280 vocab, 127741 merges, 1283 special tokens (byte-level BPE)\n[registry] max_resident_models=3, max_resident_mem=95.3 GB\nLoading model-layer-23.safetensors...\nLoading model-layer-11.safetensors...\nLoading model-layer-7.safetensors...\nLoading model-layer-36.safetensors...\nLoading model-layer-18.safetensors...\nLoading model-layer-2.safetensors...\nLoading model-layer-33.safetensors...\nLoading model-layer-26.safetensors...\nLoading model-layer-14.safetensors...\nLoading model-mtp.safetensors...\nLoading model-layer-39.safetensors...\nLoading model-layer-17.safetensors...\nLoading model-layer-8.safetensors...\nLoading model-layer-25.safetensors...\nLoading model-layer-40.safetensors...\nLoading model-layer-30.safetensors...\nLoading model-top.safetensors...\nLoading model-layer-1.safetensors...\nLoading model-layer-35.safetensors...\nLoading model-layer-4.safetensors...\nLoading model-layer-29.safetensors...\nLoading model-layer-12.safetensors...\nLoading model-layer-20.safetensors...\nLoading model-layer-15.safetensors...\nLoading model-layer-27.safetensors...\nLoading model-layer-32.safetensors...\nLoading model-layer-42.safetensors...\nLoading model-layer-3.safetensors...\nLoading model-layer-37.safetensors...\nLoading model-layer-19.safetensors...\nLoading model-layer-6.safetensors...\nLoading model-layer-10.safetensors...\nLoading model-layer-22.safetensors...\nLoading model-layer-21.safetensors...\nLoading model-layer-13.safetensors...\nLoading model-layer-28.safetensors...\nLoading model-layer-5.safetensors...\nLoading model-layer-34.safetensors...\nLoading model-layer-0.safetensors...\nLoading model-layer-31.safetensors...\nLoading model-layer-41.safetensors...\nLoading model-layer-24.safetensors...\nLoading model-layer-9.safetensors...\nLoading model-layer-38.safetensors...\nLoading model-layer-16.safetensors...\nLoaded 2469 weights from 45 file(s)\ndsv4: materialized 149 DSpark stage weight tensors (7506 MB) at load\ndsv4: DSpark block cap engaged (effective=2, configured=5)\n[wired] mode=off limit=0 MB\ndsv4: wo_a batched-qmm path engaged\ndsv4: GPU MoE routing engaged\ndsv4: GPU window emission engaged\ndsv4: fused emission kernel engaged\nWarmup complete (149358 ms).\nModel ready (loaded on inference thread).\nPrometheus metrics: ENABLED \u2014 GET http://127.0.0.1:33403/metrics (live panel at GET /)\nContext size: 12288 tokens (manual)\nModel context length: 1048576 tokens\nReasoning budget: unlimited\n\nServer listening on http://127.0.0.1:33403\n  GET  /\n  GET  /health\n  GET  /props\n  GET  /v1/models\n  POST /v1/chat/completions\n  POST /v1/completions\n  POST /v1/embeddings\n  POST /v1/messages (Anthropic)\n  POST /v1/responses (OpenAI Responses)\n  POST /v1/responses/compact\n  GET  /v1/responses/{id}\n  DEL  /v1/responses/{id}\n  POST /tokenize\n  POST /detokenize\n\nRSS: 17.7G  Mem: 79%  CPU: 14%  GPU: 0%\nPOST /v1/chat/completions (1 msgs, max_tokens=16, temp=0.00, top_p=1.00, top_k=0, stream=false, thinking=false, sys=0b, user=257b, tools=0b, tool_msgs=0) \n  > \"You are reviewing a local inference engine. In four concise bullets, explain how...\"\n  prompt=50 tokens, max_gen=16, ctx=12288\n  spec=dspark (deepseek_v4 native draft stages, block=5)\ndsv4: fused sinkhorn+collapse kernel engaged\ndsv4: fused decode-chain kernel engaged\ndsv4: fused hc_post kernel engaged\ndsv4: DSpark GPU Markov-ID path engaged (one typed ID/confidence eval; draft logits stay on device)\n  [spec-stats] mode=dspark attempts=7 accepts=9 avg_per_round=1.29\n  <- 50+16 tokens (12937ms) [prefill: 5.5 tok/s, decode: 4.2 tok/s] [length]\nPOST /v1/chat/completions (1 msgs, max_tokens=16, temp=0.00, top_p=1.00, top_k=0, stream=false, thinking=false, sys=0b, user=257b, tools=0b, tool_msgs=0) \n  > \"You are reviewing a local inference engine. In four concise bullets, explain how...\"\n  prompt=50 tokens, max_gen=16, ctx=12288\n  spec=dspark (deepseek_v4 native draft stages, block=5)\n  [spec-stats] mode=dspark attempts=7 accepts=9 avg_per_round=1.29\n  <- 50+16 tokens (2884ms) [prefill: 172.1 tok/s, decode: 6.2 tok/s] [length]\n\nShutting down gracefully...\n",
+    "teardown": {
+      "exit_code": 0,
+      "pid": 75776,
+      "teardown_signal": "SIGTERM"
+    }
+  },
+  {
+    "arm": "S",
+    "arm_name": "plain_serial",
+    "balanced_order": "R2B2S",
+    "boot_id": "boot-05-S",
+    "engagement": {
+      "block_cap_b2_marker_count": 0,
+      "dspark_profile_marker_count": 0,
+      "dspark_profile_required": false,
+      "expected_dspark_stats": 0,
+      "gpu_markov_marker_count": 0,
+      "joined_verify_marker_count": 0,
+      "replay_commit_marker_count": 0,
+      "spec_stats_count": 0
+    },
+    "measurements": [
+      {
+        "metrics_histogram_delta": {
+          "available": true,
+          "histograms": {
+            "decode_time_seconds": {
+              "count": 1,
+              "sum_seconds": 0.481795831
+            },
+            "time_to_first_token_seconds": {
+              "count": 1,
+              "sum_seconds": 0.28794745900000007
+            }
+          }
+        },
+        "output_contract": {
+          "completion_tokens": 16,
+          "content": "Here are four concise, actionable improvements for speculative decoding while preserving exact greedy-token",
+          "finish_reason": "length"
+        },
+        "output_contract_sha256": "f6767e96b28f4c34cf82bff43a29886bb0f2335f1e25a8e107d96f72c7685b81",
+        "raw": {
+          "metrics_after": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-05-S/raw/measured-00.metrics-after.json",
+          "metrics_before": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-05-S/raw/measured-00.metrics-before.json",
+          "response": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-05-S/raw/measured-00.response.json"
+        },
+        "request_id": "measured-00",
+        "timings": {
+          "cached_n": 0,
+          "predicted_ms": 485.114,
+          "predicted_n": 16,
+          "predicted_per_second": 32.982,
+          "prompt_ms": 287.942,
+          "prompt_n": 50,
+          "prompt_per_second": 173.646,
+          "tokenize_ms": 0.511
+        },
+        "usage": {
+          "completion_tokens": 16,
+          "prompt_tokens": 50,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "total_tokens": 66
+        },
+        "wall_seconds": 0.774153875
+      }
+    ],
+    "order_index": 1,
+    "order_position": 2,
+    "pid": 75869,
+    "port": 33404,
+    "selected_order": "R2B2S",
+    "selected_order_position": 2,
+    "server_log": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-05-S/server.log",
+    "server_log_tail": "[mem] MLX buffer-pool cap 8192 MB (was 124518 MB)\nLogging to /Users/pjb/.mlx-serve/logs/mlx-serve-33404.log (rotates at 32 MB)\nmlx-serve 26.8.1 (MLX 0.32.0)\n[args] model: /private/tmp/dspark-lite-A\n[args] drafter: <none>\n[args] serve: 127.0.0.1:33404, ctx-size=12288, pld=off, no-vision=false\n[args] kv-quant: off\n[args] kv-attn-mode: auto\nMetal GPU: true\nModel: deepseek_v4 (43 layers, 4096-dim, head_dim=512, 64h/1kv, 8-bit affine quant)\nLoading tokenizer...\n  parsed tokenizer (6 MB) in 19ms\n  loaded 128000 vocab entries in 2ms\n  loaded 127741 merges in 3ms\nTokenizer loaded: 129280 vocab, 127741 merges, 1283 special tokens (byte-level BPE)\n[registry] max_resident_models=3, max_resident_mem=95.3 GB\nLoading model-layer-23.safetensors...\nLoading model-layer-11.safetensors...\nLoading model-layer-7.safetensors...\nLoading model-layer-36.safetensors...\nLoading model-layer-18.safetensors...\nLoading model-layer-2.safetensors...\nLoading model-layer-33.safetensors...\nLoading model-layer-26.safetensors...\nLoading model-layer-14.safetensors...\nLoading model-mtp.safetensors...\nLoading model-layer-39.safetensors...\nLoading model-layer-17.safetensors...\nLoading model-layer-8.safetensors...\nLoading model-layer-25.safetensors...\nLoading model-layer-40.safetensors...\nLoading model-layer-30.safetensors...\nLoading model-top.safetensors...\nLoading model-layer-1.safetensors...\nLoading model-layer-35.safetensors...\nLoading model-layer-4.safetensors...\nLoading model-layer-29.safetensors...\nLoading model-layer-12.safetensors...\nLoading model-layer-20.safetensors...\nLoading model-layer-15.safetensors...\nLoading model-layer-27.safetensors...\nLoading model-layer-32.safetensors...\nLoading model-layer-42.safetensors...\nLoading model-layer-3.safetensors...\nLoading model-layer-37.safetensors...\nLoading model-layer-19.safetensors...\nLoading model-layer-6.safetensors...\nLoading model-layer-10.safetensors...\nLoading model-layer-22.safetensors...\nLoading model-layer-21.safetensors...\nLoading model-layer-13.safetensors...\nLoading model-layer-28.safetensors...\nLoading model-layer-5.safetensors...\nLoading model-layer-34.safetensors...\nLoading model-layer-0.safetensors...\nLoading model-layer-31.safetensors...\nLoading model-layer-41.safetensors...\nLoading model-layer-24.safetensors...\nLoading model-layer-9.safetensors...\nLoading model-layer-38.safetensors...\nLoading model-layer-16.safetensors...\nLoaded 2469 weights from 45 file(s)\ndsv4: DSpark stages present but OFF by default (stages stay lazy at zero cost; pass --dspark to enable)\n[wired] mode=off limit=0 MB\ndsv4: wo_a batched-qmm path engaged\ndsv4: GPU MoE routing engaged\ndsv4: GPU window emission engaged\ndsv4: fused emission kernel engaged\nWarmup complete (36696 ms).\nModel ready (loaded on inference thread).\nPrometheus metrics: ENABLED \u2014 GET http://127.0.0.1:33404/metrics (live panel at GET /)\nContext size: 12288 tokens (manual)\nModel context length: 1048576 tokens\nReasoning budget: unlimited\n\nServer listening on http://127.0.0.1:33404\n  GET  /\n  GET  /health\n  GET  /props\n  GET  /v1/models\n  POST /v1/chat/completions\n  POST /v1/completions\n  POST /v1/embeddings\n  POST /v1/messages (Anthropic)\n  POST /v1/responses (OpenAI Responses)\n  POST /v1/responses/compact\n  GET  /v1/responses/{id}\n  DEL  /v1/responses/{id}\n  POST /tokenize\n  POST /detokenize\n\nRSS: 23.9G  Mem: 77%  CPU: 14%  GPU: 0%\nPOST /v1/chat/completions (1 msgs, max_tokens=16, temp=0.00, top_p=1.00, top_k=0, stream=false, thinking=false, sys=0b, user=257b, tools=0b, tool_msgs=0) \n  > \"You are reviewing a local inference engine. In four concise bullets, explain how...\"\n  prompt=50 tokens, max_gen=16, ctx=12288\ndsv4: lazy pipelined decode engaged\ndsv4: fused sinkhorn+collapse kernel engaged\ndsv4: fused decode-chain kernel engaged\ndsv4: fused hc_post kernel engaged\n  <- 50+16 tokens (1292ms) [prefill: 62.2 tok/s, decode: 32.8 tok/s] [length]\nPOST /v1/chat/completions (1 msgs, max_tokens=16, temp=0.00, top_p=1.00, top_k=0, stream=false, thinking=false, sys=0b, user=257b, tools=0b, tool_msgs=0) \n  > \"You are reviewing a local inference engine. In four concise bullets, explain how...\"\n  prompt=50 tokens, max_gen=16, ctx=12288\n  <- 50+16 tokens (773ms) [prefill: 173.6 tok/s, decode: 33.0 tok/s] [length]\n\nShutting down gracefully...\n",
+    "teardown": {
+      "exit_code": 0,
+      "pid": 75869,
+      "teardown_signal": "SIGTERM"
+    }
+  }
+]

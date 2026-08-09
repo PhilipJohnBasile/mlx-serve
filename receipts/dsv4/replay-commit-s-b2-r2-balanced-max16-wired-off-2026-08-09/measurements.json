@@ -1,0 +1,290 @@
+[
+  {
+    "arm": "S",
+    "boot_id": "boot-00-S",
+    "metrics_histogram_delta": {
+      "available": true,
+      "histograms": {
+        "decode_time_seconds": {
+          "count": 1,
+          "sum_seconds": 0.47538633300000005
+        },
+        "time_to_first_token_seconds": {
+          "count": 1,
+          "sum_seconds": 0.28664975000000015
+        }
+      }
+    },
+    "output_contract": {
+      "completion_tokens": 16,
+      "content": "Here are four concise, actionable improvements for speculative decoding while preserving exact greedy-token",
+      "finish_reason": "length"
+    },
+    "output_contract_sha256": "f6767e96b28f4c34cf82bff43a29886bb0f2335f1e25a8e107d96f72c7685b81",
+    "raw": {
+      "metrics_after": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-00-S/raw/measured-00.metrics-after.json",
+      "metrics_before": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-00-S/raw/measured-00.metrics-before.json",
+      "response": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-00-S/raw/measured-00.response.json"
+    },
+    "request_id": "measured-00",
+    "timings": {
+      "cached_n": 0,
+      "predicted_ms": 478.496,
+      "predicted_n": 16,
+      "predicted_per_second": 33.438,
+      "prompt_ms": 286.644,
+      "prompt_n": 50,
+      "prompt_per_second": 174.432,
+      "tokenize_ms": 0.332
+    },
+    "usage": {
+      "completion_tokens": 16,
+      "prompt_tokens": 50,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "total_tokens": 66
+    },
+    "wall_seconds": 0.76605775
+  },
+  {
+    "arm": "B2",
+    "boot_id": "boot-01-B2",
+    "metrics_histogram_delta": {
+      "available": true,
+      "histograms": {
+        "decode_time_seconds": {
+          "count": 1,
+          "sum_seconds": 2.2470875009999993
+        },
+        "time_to_first_token_seconds": {
+          "count": 1,
+          "sum_seconds": 1.472160208
+        }
+      }
+    },
+    "output_contract": {
+      "completion_tokens": 16,
+      "content": "Here are four concise, actionable improvements for speculative decoding while preserving exact greedy-token",
+      "finish_reason": "length"
+    },
+    "output_contract_sha256": "f6767e96b28f4c34cf82bff43a29886bb0f2335f1e25a8e107d96f72c7685b81",
+    "raw": {
+      "metrics_after": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-01-B2/raw/measured-00.metrics-after.json",
+      "metrics_before": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-01-B2/raw/measured-00.metrics-before.json",
+      "response": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-01-B2/raw/measured-00.response.json"
+    },
+    "request_id": "measured-00",
+    "timings": {
+      "cached_n": 0,
+      "predicted_ms": 2456.978,
+      "predicted_n": 16,
+      "predicted_per_second": 6.512,
+      "prompt_ms": 1472.155,
+      "prompt_n": 50,
+      "prompt_per_second": 33.964,
+      "tokenize_ms": 0.365
+    },
+    "usage": {
+      "completion_tokens": 16,
+      "prompt_tokens": 50,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "total_tokens": 66
+    },
+    "wall_seconds": 3.930031792
+  },
+  {
+    "arm": "R2",
+    "boot_id": "boot-02-R2",
+    "metrics_histogram_delta": {
+      "available": true,
+      "histograms": {
+        "decode_time_seconds": {
+          "count": 1,
+          "sum_seconds": 2.1273559989999997
+        },
+        "time_to_first_token_seconds": {
+          "count": 1,
+          "sum_seconds": 0.29166458400000117
+        }
+      }
+    },
+    "output_contract": {
+      "completion_tokens": 16,
+      "content": "Here are four concise, actionable improvements for speculative decoding while preserving exact greedy-token",
+      "finish_reason": "length"
+    },
+    "output_contract_sha256": "f6767e96b28f4c34cf82bff43a29886bb0f2335f1e25a8e107d96f72c7685b81",
+    "raw": {
+      "metrics_after": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-02-R2/raw/measured-00.metrics-after.json",
+      "metrics_before": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-02-R2/raw/measured-00.metrics-before.json",
+      "response": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-02-R2/raw/measured-00.response.json"
+    },
+    "request_id": "measured-00",
+    "timings": {
+      "cached_n": 0,
+      "predicted_ms": 2666.654,
+      "predicted_n": 16,
+      "predicted_per_second": 6.0,
+      "prompt_ms": 291.659,
+      "prompt_n": 50,
+      "prompt_per_second": 171.433,
+      "tokenize_ms": 0.556
+    },
+    "usage": {
+      "completion_tokens": 16,
+      "prompt_tokens": 50,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "total_tokens": 66
+    },
+    "wall_seconds": 2.959405958
+  },
+  {
+    "arm": "R2",
+    "boot_id": "boot-03-R2",
+    "metrics_histogram_delta": {
+      "available": true,
+      "histograms": {
+        "decode_time_seconds": {
+          "count": 1,
+          "sum_seconds": 1.939281582
+        },
+        "time_to_first_token_seconds": {
+          "count": 1,
+          "sum_seconds": 0.28877841599999954
+        }
+      }
+    },
+    "output_contract": {
+      "completion_tokens": 16,
+      "content": "Here are four concise, actionable improvements for speculative decoding while preserving exact greedy-token",
+      "finish_reason": "length"
+    },
+    "output_contract_sha256": "f6767e96b28f4c34cf82bff43a29886bb0f2335f1e25a8e107d96f72c7685b81",
+    "raw": {
+      "metrics_after": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-03-R2/raw/measured-00.metrics-after.json",
+      "metrics_before": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-03-R2/raw/measured-00.metrics-before.json",
+      "response": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-03-R2/raw/measured-00.response.json"
+    },
+    "request_id": "measured-00",
+    "timings": {
+      "cached_n": 0,
+      "predicted_ms": 2667.2,
+      "predicted_n": 16,
+      "predicted_per_second": 5.999,
+      "prompt_ms": 288.774,
+      "prompt_n": 50,
+      "prompt_per_second": 173.146,
+      "tokenize_ms": 0.362
+    },
+    "usage": {
+      "completion_tokens": 16,
+      "prompt_tokens": 50,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "total_tokens": 66
+    },
+    "wall_seconds": 2.957163584
+  },
+  {
+    "arm": "B2",
+    "boot_id": "boot-04-B2",
+    "metrics_histogram_delta": {
+      "available": true,
+      "histograms": {
+        "decode_time_seconds": {
+          "count": 1,
+          "sum_seconds": 1.951758082
+        },
+        "time_to_first_token_seconds": {
+          "count": 1,
+          "sum_seconds": 0.2904662919999996
+        }
+      }
+    },
+    "output_contract": {
+      "completion_tokens": 16,
+      "content": "Here are four concise, actionable improvements for speculative decoding while preserving exact greedy-token",
+      "finish_reason": "length"
+    },
+    "output_contract_sha256": "f6767e96b28f4c34cf82bff43a29886bb0f2335f1e25a8e107d96f72c7685b81",
+    "raw": {
+      "metrics_after": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-04-B2/raw/measured-00.metrics-after.json",
+      "metrics_before": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-04-B2/raw/measured-00.metrics-before.json",
+      "response": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-04-B2/raw/measured-00.response.json"
+    },
+    "request_id": "measured-00",
+    "timings": {
+      "cached_n": 0,
+      "predicted_ms": 2594.163,
+      "predicted_n": 16,
+      "predicted_per_second": 6.168,
+      "prompt_ms": 290.46,
+      "prompt_n": 50,
+      "prompt_per_second": 172.141,
+      "tokenize_ms": 0.464
+    },
+    "usage": {
+      "completion_tokens": 16,
+      "prompt_tokens": 50,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "total_tokens": 66
+    },
+    "wall_seconds": 2.885596875
+  },
+  {
+    "arm": "S",
+    "boot_id": "boot-05-S",
+    "metrics_histogram_delta": {
+      "available": true,
+      "histograms": {
+        "decode_time_seconds": {
+          "count": 1,
+          "sum_seconds": 0.481795831
+        },
+        "time_to_first_token_seconds": {
+          "count": 1,
+          "sum_seconds": 0.28794745900000007
+        }
+      }
+    },
+    "output_contract": {
+      "completion_tokens": 16,
+      "content": "Here are four concise, actionable improvements for speculative decoding while preserving exact greedy-token",
+      "finish_reason": "length"
+    },
+    "output_contract_sha256": "f6767e96b28f4c34cf82bff43a29886bb0f2335f1e25a8e107d96f72c7685b81",
+    "raw": {
+      "metrics_after": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-05-S/raw/measured-00.metrics-after.json",
+      "metrics_before": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-05-S/raw/measured-00.metrics-before.json",
+      "response": "receipts/dsv4/replay-commit-s-b2-r2-balanced-max16-wired-off-2026-08-09/boots/boot-05-S/raw/measured-00.response.json"
+    },
+    "request_id": "measured-00",
+    "timings": {
+      "cached_n": 0,
+      "predicted_ms": 485.114,
+      "predicted_n": 16,
+      "predicted_per_second": 32.982,
+      "prompt_ms": 287.942,
+      "prompt_n": 50,
+      "prompt_per_second": 173.646,
+      "tokenize_ms": 0.511
+    },
+    "usage": {
+      "completion_tokens": 16,
+      "prompt_tokens": 50,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "total_tokens": 66
+    },
+    "wall_seconds": 0.774153875
+  }
+]

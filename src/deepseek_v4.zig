@@ -761,6 +761,15 @@ pub const Dsv4Model = struct {
     ds_join_verify_eval_test: ?bool = null,
     /// One-time, thread-safe engagement evidence for the joined eval arm.
     ds_join_verify_eval_logged: std.atomic.Value(bool) = .init(false),
+    /// Load-time default for the exact replay-commit opt-in. Per-model
+    /// ownership prevents an environment change from rerouting a live model.
+    ds_replay_commit: bool = false,
+    /// Test-only per-model override for replaying a DSpark verify commit
+    /// serially. This remains default-off because it trades host compressor
+    /// work in verify for an exact serial commit in finish.
+    ds_replay_commit_test: ?bool = null,
+    /// One-time proof that this model used the replay-commit verifier arm.
+    ds_replay_commit_logged: std.atomic.Value(bool) = .init(false),
     /// Per-round cost audit, armed by `MLX_SERVE_DSPARK_PROFILE` at load.
     ds_prof: ?DsparkProfile = null,
     /// Profile report cadence. Defaults to 16 shipping rounds; diagnostics may
@@ -1266,6 +1275,7 @@ pub fn initModel(gpa: std.mem.Allocator, cfg: *const ModelConfig, dw: Dsv4Weight
     // decode-chain switch: it is draft-only and must remain off unless this
     // model was loaded with its exact opt-in spelling.
     const ds_draft_rows_chain = dspark_on and dsparkDraftRowsChainFromEnv();
+    const ds_replay_commit = dspark_on and dsparkReplayCommitFromEnv();
     if (ds_block_effective < ds_block) {
         log.info("dsv4: DSpark block cap engaged (effective={d}, configured={d})\n", .{ ds_block_effective, ds_block });
     }
@@ -1326,6 +1336,7 @@ pub fn initModel(gpa: std.mem.Allocator, cfg: *const ModelConfig, dw: Dsv4Weight
         .ds_block = ds_block,
         .ds_block_effective = ds_block_effective,
         .ds_draft_rows_chain = ds_draft_rows_chain,
+        .ds_replay_commit = ds_replay_commit,
         .ds_noise = cfg.dsv4_dspark_noise_token_id,
         .ds_rank = cfg.dsv4_dspark_markov_rank,
         .ds_targets = cfg.dsv4_dspark_target_layers,
@@ -1378,6 +1389,22 @@ fn dsparkDraftRowsChainFromEnv() bool {
     return dsparkDraftRowsChain(raw);
 }
 
+/// Exact, default-off opt-in for the GPU-emission-only DSpark verifier. The
+/// verifier still builds the authoritative logits, but leaves host compressor
+/// and stage-KV commits to an exact serial replay of the retained prefix.
+fn dsparkReplayCommit(raw: ?[]const u8) bool {
+    const text = raw orelse return false;
+    return std.mem.eql(u8, text, "1");
+}
+
+fn dsparkReplayCommitFromEnv() bool {
+    const raw: ?[]const u8 = if (std.c.getenv("MLX_SERVE_DSPARK_REPLAY_COMMIT")) |value|
+        std.mem.span(value)
+    else
+        null;
+    return dsparkReplayCommit(raw);
+}
+
 test "dsv4: DSpark block cap accepts only bounded positive widths" {
     try testing.expectEqual(@as(usize, 5), dsparkBlockCap(5, null));
     try testing.expectEqual(@as(usize, 1), dsparkBlockCap(5, "1"));
@@ -1397,6 +1424,15 @@ test "dsv4: DSpark draft row-grid chain requires exact opt-in" {
     try testing.expect(!dsparkDraftRowsChain("0"));
     try testing.expect(!dsparkDraftRowsChain("true"));
     try testing.expect(!dsparkDraftRowsChain("01"));
+}
+
+test "dsv4: DSpark replay commit requires exact opt-in" {
+    try testing.expect(!dsparkReplayCommit(null));
+    try testing.expect(dsparkReplayCommit("1"));
+    try testing.expect(!dsparkReplayCommit(""));
+    try testing.expect(!dsparkReplayCommit("0"));
+    try testing.expect(!dsparkReplayCommit("true"));
+    try testing.expect(!dsparkReplayCommit("01"));
 }
 
 fn dsparkProfileReportEvery() u64 {
@@ -4241,6 +4277,160 @@ test "dsv4: extendChunk .all_gpu and DSpark joined verify eval match legacy byte
             try testing.expect(std.meta.eql(legacy.fingerprint, joined.fingerprint));
             try testing.expectEqual(legacy.content_hash, joined.content_hash);
             std.debug.print("dsv4 DSpark joined verify eval: kill switch legacy + opt-in engaged, {d} logits/state exact\n", .{joined.logits.len});
+
+            // The replay experiment is intentionally narrower than the
+            // joined-eval arm above: it relies on GPU window emission for
+            // same-chunk visibility, skips every host/speculative DSpark
+            // commit, then serially retains the exact target prefix. Exercise
+            // every accept count (including full accept) against the current
+            // normal verifier from the same entry state.
+            if (gpuEmitActive(&mdl)) {
+                const saved_join_test = mdl.ds_join_verify_eval_test;
+                const saved_replay_test = mdl.ds_replay_commit_test;
+                const saved_replay_marker = mdl.ds_replay_commit_logged.load(.monotonic);
+                defer {
+                    dsparkJoinedVerifyEvalSetForTest(&mdl, saved_join_test);
+                    dsparkReplayCommitSetForTest(&mdl, saved_replay_test);
+                    mdl.ds_replay_commit_logged.store(saved_replay_marker, .monotonic);
+                }
+                dsparkJoinedVerifyEvalSetForTest(&mdl, false);
+
+                const ReplayRun = struct {
+                    logits: []f32,
+                    tokens: []u32,
+                    next_token: u32,
+                    fingerprint: Dsv4StateFingerprint,
+                    content_hash: u64,
+
+                    fn deinit(self: *@This(), a: std.mem.Allocator) void {
+                        a.free(self.logits);
+                        a.free(self.tokens);
+                    }
+                };
+                const StateRun = struct {
+                    fingerprint: Dsv4StateFingerprint,
+                    content_hash: u64,
+                };
+                const expectReplayVerifyTransient = struct {
+                    fn f(state: *const Dsv4DecodeState, pending: *const DsparkPending) !void {
+                        // The replay extend may advance st.n and GPU mirrors
+                        // for same-chunk logits. Its whole point is that no
+                        // host compressor state or DSpark stage-KV commit has
+                        // happened before finish chooses the retained prefix.
+                        try testing.expectEqual(@as(usize, 0), state.pending.items.len);
+                        try testing.expectEqual(pending.snap.n + pending.b + 1, state.n);
+                        if (state.anchors) |an| try testing.expect(!an.armed);
+                        for (state.layers, pending.snap.layers) |*layer, *entry| {
+                            try testing.expectEqual(entry.kv_gpu_used + pending.b + 1, layer.kv_gpu.used);
+                            if (layer.comp) |*comp| {
+                                const entry_comp = entry.comp.?;
+                                try testing.expectEqual(entry_comp.cache_len, comp.cache.items.len);
+                                try testing.expectEqualSlices(u8, std.mem.sliceAsBytes(entry_comp.kv_pend), std.mem.sliceAsBytes(comp.kv_pend));
+                                try testing.expectEqualSlices(u8, std.mem.sliceAsBytes(entry_comp.sc_pend), std.mem.sliceAsBytes(comp.sc_pend));
+                            }
+                            if (layer.idx_comp) |*comp| {
+                                const entry_comp = entry.idx_comp.?;
+                                try testing.expectEqual(entry_comp.cache_len, comp.cache.items.len);
+                                try testing.expectEqualSlices(u8, std.mem.sliceAsBytes(entry_comp.kv_pend), std.mem.sliceAsBytes(comp.kv_pend));
+                                try testing.expectEqualSlices(u8, std.mem.sliceAsBytes(entry_comp.sc_pend), std.mem.sliceAsBytes(comp.sc_pend));
+                            }
+                        }
+                        const ds = &state.dspark.?;
+                        for (ds.main_kv, pending.snap.dspark_used) |*ring, used| {
+                            try testing.expectEqual(used, ring.used);
+                        }
+                    }
+                }.f;
+
+                for (0..B + 1) |accepted| {
+                    const next_token: u32 = @intCast((accepted + 17) % mdl.vocab);
+
+                    restoreDecodeState(&st, &snap);
+                    dsparkReplayCommitSetForTest(&mdl, false);
+                    mdl.ds_replay_commit_logged.store(false, .monotonic);
+                    const normal: ReplayRun = blk: {
+                        var pending = try dsparkBeginWith(&mdl, allocator, &st, block[0], &draft);
+                        defer pending.deinit();
+                        try testing.expect(!pending.replay_commit); // per-model false wins any environment
+                        const logits = try toHostF32(allocator, pending.vl_g, (B + 1) * mdl.vocab, mdl.s);
+                        errdefer allocator.free(logits);
+                        var round = try dsparkFinish(&mdl, allocator, &st, &pending, accepted, next_token);
+                        errdefer round.deinit(allocator);
+                        break :blk .{
+                            .logits = logits,
+                            .tokens = round.tokens,
+                            .next_token = round.next_token,
+                            .fingerprint = fingerprintDecodeState(&st),
+                            .content_hash = try hashDecodeStateContent(&mdl, &st, allocator),
+                        };
+                    };
+                    defer {
+                        var owned = normal;
+                        owned.deinit(allocator);
+                    }
+                    try testing.expectEqual(@as(usize, 0), st.pending.items.len);
+                    if (st.anchors) |an| try testing.expect(!an.armed);
+                    try testing.expect(!mdl.ds_replay_commit_logged.load(.monotonic));
+
+                    // State oracle: restore the same entry offsets and use
+                    // ordinary serial decode for precisely the returned
+                    // target tokens. This intentionally differs from normal
+                    // partial finish only in its non-semantic mh_last tail;
+                    // replay must match the serial committed prefix exactly.
+                    restoreDecodeState(&st, &snap);
+                    const serial: StateRun = blk: {
+                        for (block[0 .. accepted + 1]) |token| {
+                            const logits = try decodeStep(&mdl, allocator, &st, token);
+                            defer allocator.free(logits);
+                        }
+                        break :blk .{
+                            .fingerprint = fingerprintDecodeState(&st),
+                            .content_hash = try hashDecodeStateContent(&mdl, &st, allocator),
+                        };
+                    };
+                    try testing.expectEqual(@as(usize, 0), st.pending.items.len);
+                    if (st.anchors) |an| try testing.expect(!an.armed);
+
+                    restoreDecodeState(&st, &snap);
+                    dsparkReplayCommitSetForTest(&mdl, true);
+                    const replay: ReplayRun = blk: {
+                        var pending = try dsparkBeginWith(&mdl, allocator, &st, block[0], &draft);
+                        defer pending.deinit();
+                        try testing.expect(pending.replay_commit);
+                        try testing.expect(mdl.ds_replay_commit_logged.load(.monotonic));
+                        const logits = try toHostF32(allocator, pending.vl_g, (B + 1) * mdl.vocab, mdl.s);
+                        errdefer allocator.free(logits);
+                        try expectReplayVerifyTransient(&st, &pending);
+                        var round = try dsparkFinish(&mdl, allocator, &st, &pending, accepted, next_token);
+                        errdefer round.deinit(allocator);
+                        break :blk .{
+                            .logits = logits,
+                            .tokens = round.tokens,
+                            .next_token = round.next_token,
+                            .fingerprint = fingerprintDecodeState(&st),
+                            .content_hash = try hashDecodeStateContent(&mdl, &st, allocator),
+                        };
+                    };
+                    defer {
+                        var owned = replay;
+                        owned.deinit(allocator);
+                    }
+                    try testing.expectEqual(@as(usize, 0), st.pending.items.len);
+                    if (st.anchors) |an| try testing.expect(!an.armed);
+                    try testing.expectEqualSlices(u8, std.mem.sliceAsBytes(normal.logits), std.mem.sliceAsBytes(replay.logits));
+                    try testing.expectEqualSlices(u32, normal.tokens, replay.tokens);
+                    try testing.expectEqual(normal.next_token, replay.next_token);
+                    if (accepted == B) {
+                        // Full accept has no rejected tail, so the ordinary
+                        // verifier itself must also be serial-state exact.
+                        try testing.expect(std.meta.eql(normal.fingerprint, serial.fingerprint));
+                        try testing.expectEqual(normal.content_hash, serial.content_hash);
+                    }
+                    try testing.expect(std.meta.eql(serial.fingerprint, replay.fingerprint));
+                    try testing.expectEqual(serial.content_hash, replay.content_hash);
+                }
+                std.debug.print("dsv4 DSpark replay commit: default-off normal + GPU opt-in match logits/state for {d} acceptance counts\n", .{B + 1});
+            }
         }
     }
 }
@@ -9988,19 +10178,45 @@ fn dsparkJoinedVerifyEvalEnabled(m: *const Dsv4Model) bool {
         differential_capture == null;
 }
 
+/// Test-only per-model override for the default-off replay-commit verifier.
+/// Kept on the model so parallel model tests cannot change one another's
+/// selected path.
+fn dsparkReplayCommitSetForTest(m: *Dsv4Model, value: ?bool) void {
+    m.ds_replay_commit_test = value;
+}
+
+/// The replay arm deliberately has a narrow surface: native GPU DSpark with
+/// GPU compressor emission only. Serial verification, tracing, differential
+/// capture, no-draft rounds, and ordinary decode/prefill never select it.
+fn dsparkReplayCommitEnabled(m: *const Dsv4Model, st: *const Dsv4DecodeState, serial_verify: bool) bool {
+    const enabled = m.ds_replay_commit_test orelse m.ds_replay_commit;
+    return enabled and
+        !serial_verify and
+        st.dspark != null and
+        st.pending.items.len == 0 and
+        m.n_mtp > 0 and
+        gpuEmitActive(m) and
+        !dsv4TraceEnabled() and
+        std.c.getenv("MLX_SERVE_DSPARK_TRACE") == null and
+        differential_capture == null;
+}
+
 /// What extendChunk hands back. `.last_host`/`.all_host` sync and return
 /// host f32 (last row / every row); `.all_gpu` returns the LAZY `[C, vocab]`
 /// logits array un-synced — the stochastic verify feeds it straight into the
 /// filtered-probs + accept graph so the round pays ONE bounded sync at its
 /// end. `.dspark_all_gpu_joined` is reachable only from the exact DSpark
 /// opt-in above: it returns the same array already realized together with the
-/// deferred compressor rows. `.all_host` is `.all_gpu` + toHostF32 by
-/// construction (headLogitsBatchGpu wraps headLogitsBatchG): same graph.
-const ExtendMode = enum { last_host, all_host, all_gpu, dspark_all_gpu_joined };
+/// deferred compressor rows. `.dspark_all_gpu_replay_commit` keeps only the
+/// GPU emissions needed for same-chunk logits; finish restores the entry
+/// snapshot and serially commits the accepted target prefix. `.all_host` is
+/// `.all_gpu` + toHostF32 by construction (headLogitsBatchGpu wraps
+/// headLogitsBatchG): same graph.
+const ExtendMode = enum { last_host, all_host, all_gpu, dspark_all_gpu_joined, dspark_all_gpu_replay_commit };
 
 fn ExtendRet(comptime mode: ExtendMode) type {
     return switch (mode) {
-        .all_gpu, .dspark_all_gpu_joined => mlx.mlx_array,
+        .all_gpu, .dspark_all_gpu_joined, .dspark_all_gpu_replay_commit => mlx.mlx_array,
         .last_host, .all_host => []f32,
     };
 }
@@ -10018,9 +10234,10 @@ fn extendChunk(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, ids:
     const base = st.n;
     const C = ids.len;
     const serial_verify_qmm = switch (mode) {
-        .all_host, .all_gpu, .dspark_all_gpu_joined => true,
+        .all_host, .all_gpu, .dspark_all_gpu_joined, .dspark_all_gpu_replay_commit => true,
         .last_host => false,
     };
+    const replay_commit = comptime mode == .dspark_all_gpu_replay_commit;
     const cc: c_int = @intCast(C);
     st.n += C;
     const d = m.dim;
@@ -10102,7 +10319,7 @@ fn extendChunk(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, ids:
             stream_g = ns;
         }
         // DSpark conditioning: hc-averaged stream [C, d] at target layers.
-        if (st.dspark != null and dsIsTarget(m, li)) {
+        if (!replay_commit and st.dspark != null and dsIsTarget(m, li)) {
             var mean = mlx.mlx_array_new();
             errdefer _ = mlx.mlx_array_free(mean);
             try mlx.check(mlx.mlx_mean_axis(&mean, stream_g, 1, false, m.s));
@@ -10116,6 +10333,11 @@ fn extendChunk(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, ids:
     // remain byte-for-byte the same and happen only after successful eval.
     // If there are no deferred rows, retain the ordinary lazy-logits path:
     // evaluating only the head here would merely move the caller's sync.
+    //
+    // The replay-commit arm is intentionally different: GPU compressor
+    // emissions stay live because later rows can read them, while the deferred
+    // host pushes are discarded with the speculative state. `dsparkFinish`
+    // restores its entry snapshot and replays only the retained target rows.
     const join_deferred = (comptime mode == .dspark_all_gpu_joined) and deferred.items.len > 0;
     var joined_out: ?mlx.mlx_array = null;
     errdefer {
@@ -10140,11 +10362,11 @@ fn extendChunk(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, ids:
             log.info("dsv4: DSpark joined verify/deferred-row eval engaged (one GPU barrier)\n", .{});
         }
         try pushDeferredCompChunk(m, st, a, deferred.items, base, C, fr_yarn);
-    } else {
+    } else if (!replay_commit) {
         try processDeferredCompChunk(m, st, a, deferred.items, base, C, fr_yarn);
     }
     const defer_ns: u64 = if (tracing) tclk.lap() else 0;
-    if (st.dspark != null and mh_parts.items.len > 0) {
+    if (!replay_commit and st.dspark != null and mh_parts.items.len > 0) {
         const vec = mlx.mlx_vector_array_new();
         defer _ = mlx.mlx_vector_array_free(vec);
         for (mh_parts.items) |p| _ = mlx.mlx_vector_array_append_value(vec, p);
@@ -10154,7 +10376,7 @@ fn extendChunk(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, ids:
         try appendDsparkMainKv(m, st, mh, C, &rr_plain, serial_verify_qmm);
     }
     if (m.ds_prof != null and !join_deferred) m.ds_prof_layers_ns = chunk_clk.lap();
-    const out = if (comptime mode == .all_gpu or mode == .dspark_all_gpu_joined)
+    const out = if (comptime mode == .all_gpu or mode == .dspark_all_gpu_joined or mode == .dspark_all_gpu_replay_commit)
         // Lazy: the caller owns the sync, so under profiling the head lap
         // below measures BUILD only. The joined arm has already realized the
         // same handle with the deferred rows; otherwise its eval lands in the
@@ -10464,7 +10686,9 @@ pub const DsparkPhases = struct {
     /// eval arm charges its indivisible logits+compressor barrier here once;
     /// `verify_head_ns` stays build-only, so the barrier is not double-counted.
     verify_comp_sync_ns: u64 = 0,
-    /// Restore + re-extend of the accepted prefix (0 on a full accept).
+    /// Normal path: restore + re-extend only after a partial accept. Replay
+    /// commit: restore + serially commit its retained prefix for every accept
+    /// count, including full accept.
     rollback_ns: u64 = 0,
     accepted: u32 = 0,
     committed: u32 = 0,
@@ -11114,9 +11338,11 @@ test "dsv4: dspark commit plan caps before finish" {
 }
 
 /// An in-flight round between `dsparkBegin`/`dsparkBeginWith` and
-/// `dsparkFinish`: the draft ran, the state snapshot + anchors are armed,
-/// the verify block was appended to `st`, and `vl_g` holds `[b+1, vocab]`
-/// verify logits. It is lazy by default so the caller owns the bounded sync;
+/// `dsparkFinish`: the draft ran, the entry snapshot is armed, and `vl_g`
+/// holds `[b+1, vocab]` verify logits. Ordinary verification arms per-position
+/// anchors and appends the block to `st`; replay commit skips host-only verify
+/// commits and later restores this snapshot before serially retaining the
+/// chosen prefix. It is lazy by default so the caller owns the bounded sync;
 /// the exact joined-eval opt-in returns the same handle already realized with
 /// the deferred compressor rows. The caller always `deinit`s (finish borrows
 /// the snapshot for rollback, it does not free).
@@ -11134,6 +11360,7 @@ pub const DsparkPending = struct {
     clk: DsparkClock,
     prof_on: bool,
     serial_verify: bool = false,
+    replay_commit: bool = false,
 
     /// Called by the consumer right after its host read of `vl_g`. That read
     /// owns the graph sync on the legacy lazy arm and is a realized-array read
@@ -11178,16 +11405,30 @@ pub fn dsparkBeginWith(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeSta
     const prof_on = m.ds_prof != null;
     var clk: DsparkClock = if (prof_on) DsparkClock.init() else undefined;
     var ph = DsparkPhases{};
+    var disarm_anchors_on_error = false;
+    errdefer {
+        if (disarm_anchors_on_error) {
+            if (st.anchors) |*an| an.armed = false;
+        }
+    }
 
     var snap = try snapshotDecodeState(st, gpa);
     errdefer snap.deinit();
-    // Per-position anchors: a rejected tail becomes a truncate instead of a
-    // second batched forward over the accepted prefix. Sized to the FULL
-    // block so the buffers are allocated once and reused whatever the
-    // confidence gate submits this round.
-    try armAnchors(m, st, m.ds_block);
-    if (prof_on) ph.snapshot_ns = clk.lap();
+    // Do not leave a failed verify with snapshot-covered speculative offsets
+    // or in-place compressor-ring state exposed to a later request action.
+    // The snapshot remains owned here until a pending is successfully returned.
+    errdefer restoreDecodeState(st, &snap);
     const serial_verify = std.c.getenv("MLX_SERVE_DSPARK_SERIAL_VERIFY") != null;
+    const replay_commit = B > 0 and dsparkReplayCommitEnabled(m, st, serial_verify);
+    if (!replay_commit) {
+        // Per-position anchors: a rejected tail becomes a truncate instead of
+        // a second batched forward over the accepted prefix. Sized to the FULL
+        // block so the buffers are allocated once and reused whatever the
+        // confidence gate submits this round.
+        try armAnchors(m, st, m.ds_block);
+        disarm_anchors_on_error = true;
+    }
+    if (prof_on) ph.snapshot_ns = clk.lap();
 
     // A closed confidence gate submits no draft tokens. The one-token batched
     // verification graph is numerically distinct from the serial decode path
@@ -11223,22 +11464,73 @@ pub fn dsparkBeginWith(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeSta
         gpa.free(logits);
         return .{ .snap = snap, .vl_g = vl_g, .b = B, .verify = verify, .phases = ph, .clk = clk, .prof_on = prof_on, .serial_verify = true };
     }
-    const vl_g = if (dsparkJoinedVerifyEvalEnabled(m))
+    const vl_g = if (replay_commit)
+        try extendChunk(m, gpa, st, verify[0 .. B + 1], .dspark_all_gpu_replay_commit, null)
+    else if (dsparkJoinedVerifyEvalEnabled(m))
         try extendChunk(m, gpa, st, verify[0 .. B + 1], .dspark_all_gpu_joined, null)
     else
         try extendChunk(m, gpa, st, verify[0 .. B + 1], .all_gpu, null);
-    return .{ .snap = snap, .vl_g = vl_g, .b = B, .verify = verify, .phases = ph, .clk = clk, .prof_on = prof_on };
+    if (replay_commit and !m.ds_replay_commit_logged.swap(true, .monotonic)) {
+        log.info("dsv4: DSpark replay-commit verifier engaged (GPU emissions only; retained prefix serially committed)\n", .{});
+    }
+    return .{ .snap = snap, .vl_g = vl_g, .b = B, .verify = verify, .phases = ph, .clk = clk, .prof_on = prof_on, .replay_commit = replay_commit };
 }
 
 /// Back half: commit/rollback against the accept decision. `accepted` drafts
 /// (≤ pending.b) survive; a partial accept truncates to the per-position
 /// anchor, a full accept disarms them (the verify appends ARE the state).
+/// Replay-commit instead restores the entry snapshot for every acceptance
+/// count, including full accept, and decodes only the retained target rows.
 /// `next_token` is the caller's — correction or bonus, always derived from
 /// the ORIGINAL verify logits at the acceptance point (the house
 /// partial-accept invariant; sampled form on the stochastic arm).
 pub fn dsparkFinish(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, pending: *DsparkPending, accepted: usize, next_token: u32) !DsparkRound {
     std.debug.assert(accepted <= pending.b);
-    if (accepted < pending.b) {
+    // Reserve the only result-owned allocation before any replay/rollback
+    // mutation. Everything below can then either return this round or restore
+    // the request state without leaving an allocation failure after commit.
+    const tokens = try gpa.alloc(u32, accepted + 1);
+    errdefer gpa.free(tokens);
+    if (pending.replay_commit) {
+        if (pending.prof_on) _ = pending.clk.lap(); // accept scan is host-only bookkeeping
+        // This covers a failure while duplicating mh_last itself. The replay
+        // verifier did not mutate mh_last, but its GPU offsets are already
+        // speculative and must still return to the entry snapshot.
+        errdefer restoreDecodeState(st, &pending.snap);
+        // `Dsv4Snapshot` intentionally excludes mh_last: normally the next
+        // trunk step overwrites it before a DSpark draft reads the rings. A
+        // replay can fail after serial decode has replaced that handle, so
+        // retain an owned entry copy locally and put it back on every error.
+        const ds = &st.dspark.?;
+        const entry_has_mh = ds.has_mh;
+        var entry_mh = mlx.mlx_array_new();
+        var entry_mh_owned = true;
+        defer {
+            if (entry_mh_owned) _ = mlx.mlx_array_free(entry_mh);
+        }
+        if (entry_has_mh) {
+            try mlx.check(mlx.mlx_array_set(&entry_mh, ds.mh_last));
+        }
+        restoreDecodeState(st, &pending.snap);
+        // If a serial commit allocation or kernel setup fails, restore the
+        // exact entry offsets/pending rings and the non-snapshotted mh_last
+        // handle instead of retaining a prefix with no DsparkRound owner.
+        errdefer {
+            const failed_ds = &st.dspark.?;
+            _ = mlx.mlx_array_free(failed_ds.mh_last);
+            failed_ds.mh_last = entry_mh;
+            failed_ds.has_mh = entry_has_mh;
+            entry_mh_owned = false;
+        }
+        for (pending.verify[0 .. accepted + 1]) |token| {
+            const logits = try decodeStep(m, gpa, st, token);
+            gpa.free(logits);
+        }
+        // A prior ordinary round may have left reusable anchor storage; this
+        // arm never captures it, so make its inactive ownership explicit.
+        if (st.anchors) |*an| an.armed = false;
+        if (pending.prof_on) pending.phases.rollback_ns = pending.clk.lap();
+    } else if (accepted < pending.b) {
         if (pending.prof_on) _ = pending.clk.lap(); // the accept scan is host-only bookkeeping
         if (pending.serial_verify) {
             restoreDecodeState(st, &pending.snap);
@@ -11252,7 +11544,6 @@ pub fn dsparkFinish(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState,
         if (pending.prof_on) pending.phases.rollback_ns = pending.clk.lap();
     } else if (st.anchors) |*an| an.armed = false;
 
-    const tokens = try gpa.alloc(u32, accepted + 1);
     @memcpy(tokens, pending.verify[0 .. accepted + 1]);
     pending.phases.accepted = @intCast(accepted);
     pending.phases.committed = @intCast(accepted + 1);

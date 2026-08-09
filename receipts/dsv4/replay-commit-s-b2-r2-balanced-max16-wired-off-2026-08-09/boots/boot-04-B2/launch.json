@@ -1,0 +1,77 @@
+{
+  "argv": [
+    "/Users/pjb/git/mlx-serve/zig-out/bin/mlx-serve",
+    "--model",
+    "/private/tmp/dspark-lite-A",
+    "--serve",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "33403",
+    "--ctx-size",
+    "12288",
+    "--timeout",
+    "0",
+    "--no-pld",
+    "--kv-quant",
+    "off",
+    "--no-decode-attn-quant",
+    "--prefix-cache-entries",
+    "0",
+    "--prefix-cache-mem",
+    "0",
+    "--prefix-cache-disk",
+    "0",
+    "--tokenize-cache-entries",
+    "0",
+    "--skip-mem-preflight",
+    "--metrics",
+    "--dspark"
+  ],
+  "arm": "B2",
+  "arm_name": "dspark_gpu_markov_ids_block_cap_2_fast_defaults",
+  "balanced_order": "R2B2S",
+  "boot_id": "boot-04-B2",
+  "effective_request_body": {
+    "enable_drafter": false,
+    "enable_mtp": true,
+    "enable_pld": false,
+    "max_tokens": 16,
+    "messages": [
+      {
+        "content": "You are reviewing a local inference engine. In four concise bullets, explain how to improve speculative decoding while preserving exact greedy-token equivalence. Cover KV-cache ownership, batched verification, GPU/host synchronization, and regression tests.",
+        "role": "user"
+      }
+    ],
+    "model": "dspark-lite-A",
+    "stream": false,
+    "temperature": 0,
+    "top_p": 1
+  },
+  "execution_profile": "fast-default",
+  "measured_requests": 1,
+  "order_index": 1,
+  "order_position": 1,
+  "port": 33403,
+  "prompt_sha256": "ce3894cd79412600c017961c75ab2eadafd456ba9500ea9fa3a2e7bd031666c5",
+  "sanitized_inherited_mlx_serve_keys": [],
+  "selected_order": "R2B2S",
+  "selected_order_position": 1,
+  "server_mlx_serve_env": {
+    "MLX_SERVE_DSPARK_BLOCK_CAP": "2",
+    "MLX_SERVE_DSPARK_GPU_MARKOV_IDS": "1",
+    "MLX_SERVE_WIRED": "off"
+  },
+  "timeouts_seconds": {
+    "request": 900.0,
+    "startup": 900.0
+  },
+  "warmups_excluded": 1,
+  "wired_policy": {
+    "common_mlx_serve_env": {
+      "MLX_SERVE_WIRED": "off"
+    },
+    "effective_policy": "MLX_SERVE_WIRED=off for every arm",
+    "mode": "off"
+  }
+}

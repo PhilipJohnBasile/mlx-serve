@@ -9,6 +9,7 @@ ReleaseFast binary and model directory:
   G  DSpark plus ``MLX_SERVE_DSPARK_GPU_MARKOV_IDS=1``
   J  G plus ``MLX_SERVE_DSPARK_JOIN_VERIFY_EVAL=1``
   B2 GPU-Markov DSpark, ``MLX_SERVE_DSPARK_BLOCK_CAP=2``, fast defaults
+  R2 B2 plus exact ``MLX_SERVE_DSPARK_REPLAY_COMMIT=1``
 
 Every boot receives one fixed, excluded warmup followed by the measured
 temperature-0 prompt (64 tokens by default).  It writes the server log, request and
@@ -18,14 +19,16 @@ all measured output contracts have the same SHA-256 hash.
 
 The default ``pilot`` is a one-pass S/L/G screen (one measured request per
 boot).  ``--mode balanced`` performs six counterbalanced S/L/G orders
-SLG,LGS,GSL,GLS,SGL,LSG, with three measured requests per fresh boot by
-default.  Selecting all four arms uses the frozen position-balanced orders
+SLG,LGS,GSL,GLS,SGL,LSG, with one measured request per fresh boot.  Selecting
+all four arms uses the frozen position-balanced orders
 SLGJ,LGJS,GJSL,JSLG.  This is deliberately serial: the full model must never
 be loaded twice at once on the benchmark machine.
 
 The explicit ``--execution-profile fast-default --arms S,B2`` experiment
 compares a fast-default serial baseline to the capped B2 DSpark lane.  Its
 balanced schedule is S,B2 then B2,S, so every arm occupies each position once.
+The replay comparison is ``--execution-profile fast-default --arms S,B2,R2``;
+its balanced schedule runs the forward/reverse S,B2,R2 and R2,B2,S orders.
 All inherited ``MLX_SERVE_*`` variables are still removed; "fast default"
 means the three DSV4 kill switches are deliberately absent, not inherited.
 
@@ -42,6 +45,7 @@ Examples (build ReleaseFast first):
   python3 tests/bench_dsv4_dspark_gpu_markov.py --mode balanced
   python3 tests/bench_dsv4_dspark_gpu_markov.py --mode pilot --arms S,J --max-tokens 16
   python3 tests/bench_dsv4_dspark_gpu_markov.py --execution-profile fast-default --arms S,B2 --mode pilot --max-tokens 8
+  python3 tests/bench_dsv4_dspark_gpu_markov.py --execution-profile fast-default --arms S,B2,R2 --mode balanced --max-tokens 8
 
 ``--self-test`` is offline and exercises only the harness's schedule,
 metrics-delta, environment-sanitizing, and log-evidence logic.
@@ -50,7 +54,9 @@ metrics-delta, environment-sanitizing, and log-evidence logic.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -68,11 +74,12 @@ from typing import Any, Iterable
 
 
 MANIFEST_SCHEMA = "mlx-serve.dsv4-dspark-fast-path-benchmark"
-MANIFEST_VERSION = 3
+MANIFEST_VERSION = 4
 DEFAULT_ARMS = ("S", "L", "G")
 LEGACY_ALL_ARMS = ("S", "L", "G", "J")
-ALL_ARMS = (*LEGACY_ALL_ARMS, "B2")
+ALL_ARMS = (*LEGACY_ALL_ARMS, "B2", "R2")
 B2_ARMS = ("S", "B2")
+R2_ARMS = ("S", "B2", "R2")
 BALANCED_ORDERS = (
     ("S", "L", "G"),
     ("L", "G", "S"),
@@ -91,12 +98,17 @@ B2_BALANCED_ORDERS = (
     ("S", "B2"),
     ("B2", "S"),
 )
+R2_BALANCED_ORDERS = (
+    ("S", "B2", "R2"),
+    ("R2", "B2", "S"),
+)
 ARM_NAMES = {
     "S": "plain_serial",
     "L": "legacy_dspark",
     "G": "dspark_gpu_markov_ids",
     "J": "dspark_gpu_markov_ids_joined_verify_eval",
     "B2": "dspark_gpu_markov_ids_block_cap_2_fast_defaults",
+    "R2": "dspark_gpu_markov_ids_block_cap_2_replay_commit_fast_defaults",
 }
 
 # Deliberately remove every MLX_SERVE_* inherited setting.  A benchmark must
@@ -131,6 +143,8 @@ EXECUTION_PROFILES = {
 GPU_MARKOV_ENV = "MLX_SERVE_DSPARK_GPU_MARKOV_IDS"
 JOIN_VERIFY_ENV = "MLX_SERVE_DSPARK_JOIN_VERIFY_EVAL"
 BLOCK_CAP_ENV = "MLX_SERVE_DSPARK_BLOCK_CAP"
+REPLAY_COMMIT_ENV = "MLX_SERVE_DSPARK_REPLAY_COMMIT"
+WIRED_ENV = "MLX_SERVE_WIRED"
 DSPARK_PROFILE_ENV = "MLX_SERVE_DSPARK_PROFILE"
 DSPARK_PROFILE_EVERY_ENV = "MLX_SERVE_DSPARK_PROFILE_EVERY"
 GPU_MARKOV_MARKER = (
@@ -139,6 +153,10 @@ GPU_MARKOV_MARKER = (
 )
 JOIN_VERIFY_MARKER = "dsv4: DSpark joined verify/deferred-row eval engaged (one GPU barrier)"
 BLOCK_CAP_B2_MARKER = "dsv4: DSpark block cap engaged (effective=2,"
+REPLAY_COMMIT_MARKER = (
+    "dsv4: DSpark replay-commit verifier engaged "
+    "(GPU emissions only; retained prefix serially committed)"
+)
 DSPARK_STATS_MARKER = "[spec-stats] mode=dspark"
 DSPARK_PROFILE_MARKER = "[dspark-prof]"
 LOWER_HEX_SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -162,7 +180,7 @@ class ServerHandle:
     stream: Any
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Proof-grade local DSV4 DSpark fast-path benchmark."
     )
@@ -185,7 +203,8 @@ def parse_args() -> argparse.Namespace:
         help=(
             "pilot=one pass; balanced=six S/L/G counterbalanced orders or "
             "four position-balanced orders when J is selected; fast-default "
-            "S,B2 uses its own two-order position-balanced schedule"
+            "S,B2 uses its own two-order position-balanced schedule, while "
+            "S,B2,R2 uses forward/reverse S,B2,R2 and R2,B2,S orders"
         ),
     )
     parser.add_argument(
@@ -194,17 +213,28 @@ def parse_args() -> argparse.Namespace:
         default="conservative",
         help=(
             "conservative disables three DSV4 fast paths (default); "
-            "fast-default is permitted only for the explicit S,B2 experiment "
-            "and leaves those kill switches absent after sanitization"
+            "fast-default is permitted only for explicit S,B2 or S,B2,R2 "
+            "experiments and leaves those kill switches absent after sanitization"
+        ),
+    )
+    parser.add_argument(
+        "--wired-mode",
+        choices=("default", "off"),
+        default="default",
+        help=(
+            "common wired-kernel policy for every arm: default leaves "
+            "MLX_SERVE_WIRED unset after sanitization; off sets it to off "
+            "(default: %(default)s)"
         ),
     )
     parser.add_argument(
         "--arms",
         nargs="+",
-        metavar="S,L,G,J,B2",
+        metavar="S,L,G,J,B2,R2",
         help=(
             "selected/recovery subset, e.g. --arms G or --arms S,J; "
-            "S,B2 is the fast-default B2 experiment; default is S,L,G"
+            "S,B2 is the fast-default B2 experiment and S,B2,R2 is its "
+            "replay-commit extension; default is S,L,G"
         ),
     )
     parser.add_argument(
@@ -228,13 +258,13 @@ def parse_args() -> argparse.Namespace:
         "--measured-per-boot",
         type=int,
         default=None,
-        help="measured requests after the excluded warmup (default: 1 pilot, 3 balanced)",
+        help="measured requests after the excluded warmup (must be exactly 1)",
     )
     parser.add_argument(
         "--warmups-per-boot",
         type=int,
         default=1,
-        help="fixed excluded warmups per fresh boot (default: %(default)s)",
+        help="fixed excluded warmups per fresh boot (must be exactly 1)",
     )
     parser.add_argument(
         "--port-base",
@@ -290,7 +320,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="offline harness checks; does not inspect paths or start a server",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -363,6 +393,8 @@ def schedule_for(
     if mode == "pilot":
         return (ALL_ARMS,)
     if mode == "balanced":
+        if set(selected_arms) == set(R2_ARMS):
+            return R2_BALANCED_ORDERS
         if set(selected_arms) == set(B2_ARMS):
             return B2_BALANCED_ORDERS
         if "J" in selected_arms:
@@ -382,7 +414,9 @@ def parse_selected_arms(raw_values: list[str] | None) -> tuple[str, ...]:
             if not arm:
                 continue
             if arm not in ARM_NAMES:
-                raise BenchError(f"--arms accepts only S, L, G, J, and B2; got {arm!r}")
+                raise BenchError(
+                    f"--arms accepts only S, L, G, J, B2, and R2; got {arm!r}"
+                )
             if arm in selected:
                 raise BenchError(f"--arms contains duplicate arm {arm!r}")
             selected.append(arm)
@@ -429,10 +463,35 @@ def b2_extra_env(dspark_profile_every: int | None) -> dict[str, str]:
     return env
 
 
+def r2_extra_env() -> dict[str, str]:
+    """R2 is B2 with replay commit enabled by an exact, sanitized opt-in."""
+    return {
+        **b2_extra_env(None),
+        REPLAY_COMMIT_ENV: "1",
+    }
+
+
+def wired_policy_provenance(wired_mode: str) -> dict[str, Any]:
+    if wired_mode == "default":
+        return {
+            "mode": "default",
+            "common_mlx_serve_env": {},
+            "effective_policy": f"{WIRED_ENV} unset => source default",
+        }
+    if wired_mode == "off":
+        return {
+            "mode": "off",
+            "common_mlx_serve_env": {WIRED_ENV: "off"},
+            "effective_policy": f"{WIRED_ENV}=off for every arm",
+        }
+    raise ValueError(f"unknown wired mode {wired_mode!r}")
+
+
 def sanitized_server_env(
     arm: str,
     execution_profile: str = "conservative",
     dspark_profile_every: int | None = None,
+    wired_mode: str = "default",
 ) -> tuple[dict[str, str], list[str]]:
     if arm not in ARM_NAMES:
         raise ValueError(f"unknown arm {arm!r}")
@@ -442,12 +501,15 @@ def sanitized_server_env(
     removed = sorted(key for key in inherited if key.startswith("MLX_SERVE_"))
     env = {key: value for key, value in inherited.items() if not key.startswith("MLX_SERVE_")}
     env.update(EXECUTION_PROFILES[execution_profile]["common_mlx_serve_env"])
+    env.update(wired_policy_provenance(wired_mode)["common_mlx_serve_env"])
     if arm in ("G", "J"):
         env[GPU_MARKOV_ENV] = "1"
     if arm == "J":
         env[JOIN_VERIFY_ENV] = "1"
     if arm == "B2":
         env.update(b2_extra_env(dspark_profile_every))
+    if arm == "R2":
+        env.update(r2_extra_env())
     return env, removed
 
 
@@ -557,6 +619,10 @@ def effective_arm_config(dspark_profile_every: int | None = None) -> dict[str, A
         "B2": {
             "dspark_server_flag": True,
             "extra_mlx_serve_env": b2_extra_env(dspark_profile_every),
+        },
+        "R2": {
+            "dspark_server_flag": True,
+            "extra_mlx_serve_env": r2_extra_env(),
         },
     }
 
@@ -727,29 +793,51 @@ def assess_engagement(
     gpu_markers = log.count(GPU_MARKOV_MARKER)
     joined_markers = log.count(JOIN_VERIFY_MARKER)
     block_cap_b2_markers = log.count(BLOCK_CAP_B2_MARKER)
+    replay_commit_markers = log.count(REPLAY_COMMIT_MARKER)
     profile_markers = log.count(DSPARK_PROFILE_MARKER)
     evidence = {
         "spec_stats_count": spec_stats,
         "gpu_markov_marker_count": gpu_markers,
         "joined_verify_marker_count": joined_markers,
         "block_cap_b2_marker_count": block_cap_b2_markers,
+        "replay_commit_marker_count": replay_commit_markers,
         "dspark_profile_marker_count": profile_markers,
         "dspark_profile_required": dspark_profile_required,
         "expected_dspark_stats": expected_dspark_stats if arm != "S" else 0,
     }
     if arm == "S":
-        if spec_stats != 0 or gpu_markers != 0 or joined_markers != 0:
+        if (
+            spec_stats != 0
+            or gpu_markers != 0
+            or joined_markers != 0
+            or replay_commit_markers != 0
+        ):
             raise BenchError(f"S must have no speculative evidence, observed {evidence}")
     elif arm == "L":
-        if spec_stats != expected_dspark_stats or gpu_markers != 0 or joined_markers != 0:
+        if (
+            spec_stats != expected_dspark_stats
+            or gpu_markers != 0
+            or joined_markers != 0
+            or replay_commit_markers != 0
+        ):
             raise BenchError(f"L must have DSpark stats and no fast-path markers, observed {evidence}")
     elif arm == "G":
-        if spec_stats != expected_dspark_stats or gpu_markers != 1 or joined_markers != 0:
+        if (
+            spec_stats != expected_dspark_stats
+            or gpu_markers != 1
+            or joined_markers != 0
+            or replay_commit_markers != 0
+        ):
             raise BenchError(
                 f"G must have DSpark stats, one GPU marker, and no joined marker, observed {evidence}"
             )
     elif arm == "J":
-        if spec_stats != expected_dspark_stats or gpu_markers != 1 or joined_markers != 1:
+        if (
+            spec_stats != expected_dspark_stats
+            or gpu_markers != 1
+            or joined_markers != 1
+            or replay_commit_markers != 0
+        ):
             raise BenchError(
                 f"J must have DSpark stats and exactly one of both engagement markers, observed {evidence}"
             )
@@ -759,6 +847,7 @@ def assess_engagement(
             or gpu_markers != 1
             or joined_markers != 0
             or block_cap_b2_markers != 1
+            or replay_commit_markers != 0
         ):
             raise BenchError(
                 "B2 must have DSpark stats, one GPU marker, one effective=2 cap marker, "
@@ -768,6 +857,20 @@ def assess_engagement(
             raise BenchError(f"B2 profiled run has no profile marker, observed {evidence}")
         if not dspark_profile_required and profile_markers != 0:
             raise BenchError(f"B2 unprofiled run leaked a profile marker, observed {evidence}")
+    elif arm == "R2":
+        if (
+            spec_stats != expected_dspark_stats
+            or gpu_markers != 1
+            or joined_markers != 0
+            or block_cap_b2_markers != 1
+            or replay_commit_markers != 1
+            or profile_markers != 0
+        ):
+            raise BenchError(
+                "R2 must have DSpark stats, one GPU marker, one effective=2 cap marker, "
+                "one replay-commit marker, no joined marker, and no profile marker; "
+                f"observed {evidence}"
+            )
     else:
         raise ValueError(f"unknown arm {arm!r}")
     return evidence
@@ -893,6 +996,7 @@ def run_boot(
         arm,
         args.execution_profile,
         args.dspark_profile_every,
+        args.wired_mode,
     )
     argv = common_argv(args.binary, args.model, port, arm)
     body = request_body(args.model, prompt, arm, args.max_tokens)
@@ -904,6 +1008,7 @@ def run_boot(
             "arm": arm,
             "arm_name": ARM_NAMES[arm],
             "execution_profile": args.execution_profile,
+            "wired_policy": wired_policy_provenance(args.wired_mode),
             "balanced_order": "".join(order),
             "selected_order": "".join(selected_order),
             "order_index": order_index,
@@ -1074,6 +1179,11 @@ def compatible_compare_receipt(receipt_dir: Path, current_manifest: dict[str, An
             previous_manifest.get("execution_profile"),
             current_manifest.get("execution_profile"),
         ),
+        (
+            "wired_policy",
+            previous_manifest.get("wired_policy"),
+            current_manifest.get("wired_policy"),
+        ),
     )
     mismatches = [name for name, prior, current in checks if not prior or prior != current]
     if mismatches:
@@ -1187,10 +1297,16 @@ def output_arm_coverage(
     current = {item["arm"] for item in measurements}
     imported = set() if compare_receipt is None else set(compare_receipt["arms"])
     covered = current | imported
-    # The explicit fast-default B2 experiment has its own serial baseline.
+    # The explicit fast-default B2/R2 experiments have their own serial baselines.
     # Every other run retains S/L/G as the canonical baseline, with selected
     # extension arms additionally required for its requested result.
-    canonical_baseline = B2_ARMS if set(selected_arms) == set(B2_ARMS) else DEFAULT_ARMS
+    selected_set = set(selected_arms)
+    if selected_set == set(R2_ARMS):
+        canonical_baseline = R2_ARMS
+    elif selected_set == set(B2_ARMS):
+        canonical_baseline = B2_ARMS
+    else:
+        canonical_baseline = DEFAULT_ARMS
     required = set(canonical_baseline) | set(selected_arms)
     missing = required - covered
     return {
@@ -1225,6 +1341,16 @@ def schedule_assessment(
         label = "complete two-order position-balanced S/B2 schedule"
         counterbalanced = False
         position_balanced = True
+    elif (
+        set(selected_arms) == set(R2_ARMS)
+        and expected_orders == R2_BALANCED_ORDERS
+        and frozen_complete
+    ):
+        label = "complete forward/reverse S/B2/R2 schedule"
+        counterbalanced = False
+        # The two orders invert S and R2 around the fixed B2 middle position.
+        # This controls directionality without claiming full three-position balance.
+        position_balanced = False
     elif (
         set(selected_arms) == set(DEFAULT_ARMS)
         and expected_orders == BALANCED_ORDERS
@@ -1277,6 +1403,42 @@ def observed_schedule_from_boots(boots: list[dict[str, Any]]) -> tuple[tuple[str
     return tuple(observed)
 
 
+def finite_ratio(numerator: Any, denominator: Any) -> float | None:
+    """Return an intentionally directional metric ratio, or no result."""
+    numerator_value = numeric(numerator)
+    denominator_value = numeric(denominator)
+    if numerator_value is None or denominator_value in (None, 0.0):
+        return None
+    return numerator_value / denominator_value
+
+
+def arm_metric_ratio(
+    arms: dict[str, dict[str, Any]], numerator_arm: str, denominator_arm: str
+) -> dict[str, Any] | None:
+    """Compare two named arms without constraining the receipt's other arms."""
+    numerator = arms.get(numerator_arm)
+    denominator = arms.get(denominator_arm)
+    if numerator is None or denominator is None:
+        return None
+    metric_names = (
+        "wall_tokens_per_second",
+        "wall_seconds_per_completion_token",
+        "metrics_decode_tokens_per_second",
+        "metrics_decode_seconds_per_completion_token",
+        "metrics_ttft_seconds_mean",
+        "response_predicted_ms_mean",
+    )
+    return {
+        "numerator_arm": numerator_arm,
+        "denominator_arm": denominator_arm,
+        "direction": "numerator / denominator",
+        "metrics": {
+            name: finite_ratio(numerator.get(name), denominator.get(name))
+            for name in metric_names
+        },
+    }
+
+
 def speed_summary(
     measurements: list[dict[str, Any]],
     output_hash: str,
@@ -1322,11 +1484,17 @@ def speed_summary(
             "completion_tokens": completion_tokens,
             "wall_seconds_total": wall_seconds,
             "wall_tokens_per_second": (completion_tokens / wall_seconds) if wall_seconds else None,
+            "wall_seconds_per_completion_token": (
+                wall_seconds / completion_tokens if completion_tokens else None
+            ),
             "metrics_ttft_seconds_total": ttft_seconds,
             "metrics_ttft_seconds_mean": (ttft_seconds / len(rows)) if rows else None,
             "metrics_decode_seconds_total": decode_seconds,
             "metrics_decode_tokens_per_second": (
                 completion_tokens / decode_seconds if decode_seconds else None
+            ),
+            "metrics_decode_seconds_per_completion_token": (
+                decode_seconds / completion_tokens if completion_tokens else None
             ),
             "response_predicted_ms_mean": (
                 sum(response_decode_ms) / len(response_decode_ms) if response_decode_ms else None
@@ -1361,6 +1529,12 @@ def speed_summary(
         and schedule["position_balanced"]
     ):
         speed_scope = "same-receipt complete position-balanced S/B2 timing comparison"
+    elif (
+        set(selected_arms) == set(R2_ARMS)
+        and expected_orders == R2_BALANCED_ORDERS
+        and schedule["complete_frozen_schedule"]
+    ):
+        speed_scope = "same-receipt complete forward/reverse S/B2/R2 timing comparison"
     elif schedule["position_balanced"]:
         speed_scope = "same-receipt complete position-balanced S/L/G/J timing comparison"
     else:
@@ -1399,6 +1573,10 @@ def speed_summary(
             },
         },
         "arms": arms,
+        "arm_metric_ratios": {
+            "B2_vs_R2": arm_metric_ratio(arms, "B2", "R2"),
+            "S_vs_R2": arm_metric_ratio(arms, "S", "R2"),
+        },
     }
 
 
@@ -1418,14 +1596,18 @@ def validate_experiment_contract(
 ) -> None:
     selected = set(selected_arms)
     is_b2_pair = selected == set(B2_ARMS)
-    if execution_profile == "fast-default" and not is_b2_pair:
+    is_r2_triplet = selected == set(R2_ARMS)
+    if execution_profile == "fast-default" and not (is_b2_pair or is_r2_triplet):
         raise BenchError(
-            "--execution-profile fast-default is reserved for the explicit --arms S,B2 experiment"
+            "--execution-profile fast-default is reserved for the explicit "
+            "--arms S,B2 or --arms S,B2,R2 experiments"
         )
-    if "B2" in selected and not is_b2_pair:
-        raise BenchError("B2 requires the explicit serial pair --arms S,B2")
-    if "B2" in selected and execution_profile != "fast-default":
-        raise BenchError("B2 requires --execution-profile fast-default")
+    if "R2" in selected and not is_r2_triplet:
+        raise BenchError("R2 requires the explicit replay comparison --arms S,B2,R2")
+    if "B2" in selected and not (is_b2_pair or is_r2_triplet):
+        raise BenchError("B2 requires --arms S,B2 or --arms S,B2,R2")
+    if ("B2" in selected or "R2" in selected) and execution_profile != "fast-default":
+        raise BenchError("B2 and R2 require --execution-profile fast-default")
     if dspark_profile_every is not None:
         if not is_b2_pair:
             raise BenchError("--dspark-profile-every is available only for the S,B2 experiment")
@@ -1448,10 +1630,12 @@ def validate_args(
         args.mode,
         args.dspark_profile_every,
     )
-    if args.warmups_per_boot < 1:
-        raise BenchError("--warmups-per-boot must be at least 1 for a stable excluded warmup")
-    if args.measured_per_boot is not None and args.measured_per_boot < 1:
-        raise BenchError("--measured-per-boot must be at least 1")
+    if args.warmups_per_boot != 1:
+        raise BenchError(
+            "--warmups-per-boot must be exactly 1: every fresh boot has one excluded same-shape warmup"
+        )
+    if args.measured_per_boot is not None and args.measured_per_boot != 1:
+        raise BenchError("--measured-per-boot must be exactly 1 per fresh boot")
     if args.startup_timeout <= 0 or args.request_timeout <= 0:
         raise BenchError("timeouts must be positive")
     if args.max_tokens < 1:
@@ -1494,9 +1678,7 @@ def run_benchmark(args: argparse.Namespace) -> Path:
     prompt = resolve_prompt(args)
     if not prompt.strip():
         raise BenchError("fixed benchmark prompt is empty")
-    measured_per_boot = args.measured_per_boot
-    if measured_per_boot is None:
-        measured_per_boot = 1 if args.mode == "pilot" else 3
+    measured_per_boot = 1 if args.measured_per_boot is None else args.measured_per_boot
 
     out_dir = prepare_out_dir(args)
     request_config = effective_request_config(args.model, args.max_tokens)
@@ -1517,6 +1699,7 @@ def run_benchmark(args: argparse.Namespace) -> Path:
         "model": model_identity(args.model, args.model_hash_mode),
         "common_server_argv": common_argv(args.binary, args.model, args.port_base, "S")[1:],
         "execution_profile": profile_provenance(args.execution_profile),
+        "wired_policy": wired_policy_provenance(args.wired_mode),
         "effective_arm_config": effective_arm_config(args.dspark_profile_every),
     }
     compare_receipt = (
@@ -1603,10 +1786,33 @@ def run_self_tests() -> None:
             return
         raise AssertionError(f"{label} must fail")
 
+    default_args = parse_args([])
+    assert default_args.wired_mode == "default"
+    assert parse_args(["--wired-mode", "off"]).wired_mode == "off"
+    help_output = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(help_output):
+            parse_args(["--help"])
+    except SystemExit as error:
+        assert error.code == 0
+    else:
+        raise AssertionError("--help must exit successfully")
+    assert "--wired-mode {default,off}" in help_output.getvalue()
+    invalid_output = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(invalid_output):
+            parse_args(["--wired-mode", "invalid"])
+    except SystemExit as error:
+        assert error.code != 0
+    else:
+        raise AssertionError("invalid --wired-mode must fail argument validation")
+    assert "invalid choice" in invalid_output.getvalue()
+
     assert schedule_for("pilot") == (ALL_ARMS,)
     assert schedule_for("balanced") == BALANCED_ORDERS
     assert schedule_for("balanced", LEGACY_ALL_ARMS) == FOUR_ARM_BALANCED_ORDERS
     assert schedule_for("balanced", B2_ARMS) == B2_BALANCED_ORDERS
+    assert schedule_for("balanced", R2_ARMS) == R2_BALANCED_ORDERS
     assert [arm for order in BALANCED_ORDERS for arm in order].count("S") == 6
     assert [arm for order in BALANCED_ORDERS for arm in order].count("L") == 6
     assert [arm for order in BALANCED_ORDERS for arm in order].count("G") == 6
@@ -1616,11 +1822,13 @@ def run_self_tests() -> None:
     for arm in B2_ARMS:
         positions = [order.index(arm) for order in B2_BALANCED_ORDERS]
         assert sorted(positions) == [0, 1]
+    assert R2_BALANCED_ORDERS == (("S", "B2", "R2"), ("R2", "B2", "S"))
     assert parse_selected_arms(None) == DEFAULT_ARMS
     assert parse_selected_arms(["G"]) == ("G",)
     assert parse_selected_arms(["S,J"]) == ("S", "J")
     assert parse_selected_arms(["S,L", "G"]) == DEFAULT_ARMS
     assert parse_selected_arms(["S,B2"]) == B2_ARMS
+    assert parse_selected_arms(["S,B2,R2"]) == R2_ARMS
     assert filtered_schedule(schedule_for("pilot"), ("G",)) == ((ALL_ARMS, ("G",)),)
     assert filtered_schedule(schedule_for("pilot", ("S", "J")), ("S", "J")) == (
         (ALL_ARMS, ("S", "J")),
@@ -1630,6 +1838,10 @@ def run_self_tests() -> None:
     assert filtered_schedule(schedule_for("balanced", B2_ARMS), B2_ARMS) == (
         (("S", "B2"), ("S", "B2")),
         (("B2", "S"), ("B2", "S")),
+    )
+    assert filtered_schedule(schedule_for("balanced", R2_ARMS), R2_ARMS) == (
+        (("S", "B2", "R2"), ("S", "B2", "R2")),
+        (("R2", "B2", "S"), ("R2", "B2", "S")),
     )
 
     pilot_label = schedule_assessment(
@@ -1653,6 +1865,11 @@ def run_self_tests() -> None:
         "balanced", B2_ARMS, B2_BALANCED_ORDERS, B2_BALANCED_ORDERS, True
     )
     assert b2_label["position_balanced"] and not b2_label["counterbalanced"]
+    r2_label = schedule_assessment(
+        "balanced", R2_ARMS, R2_BALANCED_ORDERS, R2_BALANCED_ORDERS, True
+    )
+    assert r2_label["label"] == "complete forward/reverse S/B2/R2 schedule"
+    assert not r2_label["position_balanced"] and not r2_label["counterbalanced"]
     pilot_body = request_body(Path("/models/fake"), "prompt", "J", 16)
     assert pilot_body["max_tokens"] == 16 and pilot_body["enable_mtp"] is True
 
@@ -1661,6 +1878,8 @@ def run_self_tests() -> None:
         BLOCK_CAP_ENV,
         DSPARK_PROFILE_ENV,
         DSPARK_PROFILE_EVERY_ENV,
+        REPLAY_COMMIT_ENV,
+        WIRED_ENV,
         "MLX_SERVE_DSV4_DEC_CHAIN",
     )
     previous = {key: os.environ.get(key) for key in inherited_keys}
@@ -1668,6 +1887,8 @@ def run_self_tests() -> None:
     os.environ[BLOCK_CAP_ENV] = "5"
     os.environ[DSPARK_PROFILE_ENV] = "1"
     os.environ[DSPARK_PROFILE_EVERY_ENV] = "99"
+    os.environ[REPLAY_COMMIT_ENV] = "0"
+    os.environ[WIRED_ENV] = "on"
     os.environ["MLX_SERVE_DSV4_DEC_CHAIN"] = "0"
     try:
         legacy, removed = sanitized_server_env("L")
@@ -1676,9 +1897,12 @@ def run_self_tests() -> None:
         fast_serial, fast_removed = sanitized_server_env("S", "fast-default")
         b2, _ = sanitized_server_env("B2", "fast-default")
         profiled_b2, _ = sanitized_server_env("B2", "fast-default", 1)
+        r2, _ = sanitized_server_env("R2", "fast-default")
         assert "MLX_SERVE_DSPARK_SERIAL_VERIFY" in removed
         assert BLOCK_CAP_ENV in fast_removed
         assert DSPARK_PROFILE_ENV in fast_removed
+        assert REPLAY_COMMIT_ENV in fast_removed
+        assert WIRED_ENV in fast_removed
         assert "MLX_SERVE_DSPARK_SERIAL_VERIFY" not in legacy
         assert {key: legacy[key] for key in COMMON_ENV} == COMMON_ENV
         assert all(key in COMMON_ENV for key in legacy if key.startswith("MLX_SERVE_"))
@@ -1701,6 +1925,24 @@ def run_self_tests() -> None:
             DSPARK_PROFILE_ENV: "1",
             DSPARK_PROFILE_EVERY_ENV: "1",
         }
+        assert {
+            key: value for key, value in r2.items() if key.startswith("MLX_SERVE_")
+        } == {
+            GPU_MARKOV_ENV: "1",
+            BLOCK_CAP_ENV: "2",
+            REPLAY_COMMIT_ENV: "1",
+        }
+        for arm in ALL_ARMS:
+            profile = "fast-default" if arm in ("B2", "R2") else "conservative"
+            default_wired, default_removed = sanitized_server_env(
+                arm, profile, wired_mode="default"
+            )
+            off_wired, off_removed = sanitized_server_env(
+                arm, profile, wired_mode="off"
+            )
+            assert WIRED_ENV in default_removed and WIRED_ENV in off_removed
+            assert WIRED_ENV not in default_wired
+            assert off_wired[WIRED_ENV] == "off"
     finally:
         for key, value in previous.items():
             if value is None:
@@ -1710,18 +1952,36 @@ def run_self_tests() -> None:
 
     assert profile_provenance("conservative")["common_mlx_serve_env"] == COMMON_ENV
     assert profile_provenance("fast-default")["common_mlx_serve_env"] == {}
+    assert wired_policy_provenance("default")["common_mlx_serve_env"] == {}
+    assert wired_policy_provenance("off")["common_mlx_serve_env"] == {
+        WIRED_ENV: "off"
+    }
     assert effective_arm_config()["B2"]["extra_mlx_serve_env"] == {
         GPU_MARKOV_ENV: "1",
         BLOCK_CAP_ENV: "2",
     }
     assert effective_arm_config(8)["B2"]["extra_mlx_serve_env"][DSPARK_PROFILE_EVERY_ENV] == "8"
+    assert effective_arm_config()["R2"]["extra_mlx_serve_env"] == {
+        GPU_MARKOV_ENV: "1",
+        BLOCK_CAP_ENV: "2",
+        REPLAY_COMMIT_ENV: "1",
+    }
 
     validate_experiment_contract("conservative", DEFAULT_ARMS, "balanced", None)
     validate_experiment_contract("fast-default", B2_ARMS, "pilot", None)
     validate_experiment_contract("fast-default", B2_ARMS, "pilot", 1)
+    validate_experiment_contract("fast-default", R2_ARMS, "balanced", None)
     must_fail(
         lambda: validate_experiment_contract("conservative", B2_ARMS, "pilot", None),
         "B2 conservative profile",
+    )
+    must_fail(
+        lambda: validate_experiment_contract("conservative", R2_ARMS, "balanced", None),
+        "R2 conservative profile",
+    )
+    must_fail(
+        lambda: validate_experiment_contract("fast-default", ("S", "R2"), "balanced", None),
+        "R2 missing B2 control",
     )
     must_fail(
         lambda: validate_experiment_contract("fast-default", DEFAULT_ARMS, "pilot", None),
@@ -1770,6 +2030,11 @@ def run_self_tests() -> None:
         1,
         dspark_profile_required=True,
     )
+    assess_engagement(
+        "R2",
+        f"{DSPARK_STATS_MARKER}\n{GPU_MARKOV_MARKER}\n{BLOCK_CAP_B2_MARKER}\n{REPLAY_COMMIT_MARKER}",
+        1,
+    )
     must_fail(lambda: assess_engagement("G", DSPARK_STATS_MARKER, 1), "G marker omission")
     must_fail(
         lambda: assess_engagement(
@@ -1789,6 +2054,12 @@ def run_self_tests() -> None:
             dspark_profile_required=True,
         ),
         "B2 profile-marker omission",
+    )
+    must_fail(
+        lambda: assess_engagement(
+            "R2", f"{DSPARK_STATS_MARKER}\n{GPU_MARKOV_MARKER}\n{BLOCK_CAP_B2_MARKER}", 1
+        ),
+        "R2 replay-marker omission",
     )
 
     serial_response = {
@@ -1842,6 +2113,12 @@ def run_self_tests() -> None:
     assert b2_match["covered_arms"] == ["S", "B2"]
     assert b2_match["missing_required_arms"] == []
     assert b2_match["complete_for_required_arms"]
+    r2_match = output_arm_coverage(
+        [measurement("B2"), measurement("R2")], R2_ARMS, {"arms": ["S"]}
+    )
+    assert r2_match["canonical_baseline_arms"] == ["S", "B2", "R2"]
+    assert r2_match["covered_arms"] == ["S", "B2", "R2"]
+    assert r2_match["complete_for_required_arms"]
 
     def speed_measurement(arm: str) -> dict[str, Any]:
         return {
@@ -1913,6 +2190,45 @@ def run_self_tests() -> None:
     assert b2_summary["comparability"]["cross_arm_speed_scope"] == (
         "same-receipt complete position-balanced S/B2 timing comparison"
     )
+    r2_summary = speed_summary(
+        [
+            speed_measurement("S"),
+            speed_measurement("B2"),
+            speed_measurement("R2"),
+            speed_measurement("R2"),
+            speed_measurement("B2"),
+            speed_measurement("S"),
+        ],
+        digest,
+        R2_ARMS,
+        None,
+        mode="balanced",
+        expected_orders=R2_BALANCED_ORDERS,
+        observed_orders=R2_BALANCED_ORDERS,
+        measured_per_boot=1,
+        request_config=request_config,
+    )
+    assert set(r2_summary["arms"]) == {"S", "B2", "R2"}
+    assert r2_summary["schedule"]["label"] == "complete forward/reverse S/B2/R2 schedule"
+    assert r2_summary["comparability"]["cross_arm_speed_scope"] == (
+        "same-receipt complete forward/reverse S/B2/R2 timing comparison"
+    )
+    assert r2_summary["arm_metric_ratios"]["B2_vs_R2"] == {
+        "numerator_arm": "B2",
+        "denominator_arm": "R2",
+        "direction": "numerator / denominator",
+        "metrics": {
+            "wall_tokens_per_second": 1.0,
+            "wall_seconds_per_completion_token": 1.0,
+            "metrics_decode_tokens_per_second": 1.0,
+            "metrics_decode_seconds_per_completion_token": 1.0,
+            "metrics_ttft_seconds_mean": 1.0,
+            "response_predicted_ms_mean": 1.0,
+        },
+    }
+    assert r2_summary["arm_metric_ratios"]["S_vs_R2"]["metrics"][
+        "wall_tokens_per_second"
+    ] == 1.0
 
     provenance = manifest_provenance(Path(__file__), 900.0, 901.0, request_config)
     assert provenance["schema"] == MANIFEST_SCHEMA
@@ -1927,6 +2243,7 @@ def run_self_tests() -> None:
         "model": {"tree_manifest_sha256": "c" * 64},
         "effective_arm_config": effective_arm_config(),
         "execution_profile": profile_provenance("conservative"),
+        "wired_policy": wired_policy_provenance("default"),
     }
     with tempfile.TemporaryDirectory() as temp:
         receipt = Path(temp)
@@ -1963,6 +2280,12 @@ def run_self_tests() -> None:
         must_fail(
             lambda: compatible_compare_receipt(receipt, mismatched_manifest),
             "comparison execution profile mismatch",
+        )
+        mismatched_manifest = json.loads(json.dumps(current_manifest))
+        mismatched_manifest["wired_policy"] = wired_policy_provenance("off")
+        must_fail(
+            lambda: compatible_compare_receipt(receipt, mismatched_manifest),
+            "comparison wired policy mismatch",
         )
         old_manifest = json.loads(json.dumps(current_manifest))
         old_manifest.pop("schema_version")
