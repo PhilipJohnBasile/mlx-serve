@@ -1,0 +1,112 @@
+{
+  "schema": "mlx-serve.dsv4-dspark-draft-row-grid-pilot",
+  "schema_version": 1,
+  "date_local": "2026-08-09",
+  "verdict": "no-go-for-promotion-keep-default-off-diagnostic",
+  "scope": "guarded real-model B2 pilot; not a balanced benchmark or a broad quality proof",
+  "candidate": {
+    "feature": "DSpark draft row-grid Q/KV/O post-0/post-1 chain",
+    "environment": {
+      "MLX_SERVE_DSPARK_BLOCK_CAP": "2",
+      "MLX_SERVE_DSPARK_DRAFT_ROWS_CHAIN": "1",
+      "MLX_SERVE_DSPARK_GPU_MARKOV_IDS": "1",
+      "MLX_SERVE_DSPARK_PROFILE": "1",
+      "MLX_SERVE_DSPARK_PROFILE_EVERY": "1"
+    },
+    "engagement_marker_observed": "dsv4: DSpark draft row-grid Q/KV/O chain engaged (post-0/post-1 only)",
+    "startup_warmup_ms": 110198,
+    "excluded_request_wall_seconds": 10.987142,
+    "measured_request_wall_seconds": 10.942703,
+    "measured_attempts": 7,
+    "measured_accepts": 9,
+    "profile_cumulative_round_7_ms": {
+      "round": 1262.4,
+      "draft": 541.7,
+      "markov": 275.0,
+      "verify": 720.2,
+      "verify_comp_sync": 573.2
+    },
+    "profile_cumulative_round_14_ms": {
+      "round": 1193.4,
+      "draft": 339.2,
+      "markov": 138.8,
+      "verify": 853.8,
+      "verify_comp_sync": 377.4
+    },
+    "derived_measured_request_per_round_ms": {
+      "round": 1124.4,
+      "draft": 136.7,
+      "markov": 2.6,
+      "verify": 987.4,
+      "verify_comp_sync": 181.6
+    }
+  },
+  "control": {
+    "feature": "same binary with draft row-grid opt-in unset",
+    "environment": {
+      "MLX_SERVE_DSPARK_BLOCK_CAP": "2",
+      "MLX_SERVE_DSPARK_GPU_MARKOV_IDS": "1",
+      "MLX_SERVE_DSPARK_PROFILE": "1",
+      "MLX_SERVE_DSPARK_PROFILE_EVERY": "1"
+    },
+    "engagement_marker_observed": null,
+    "startup_warmup_ms": 78452,
+    "excluded_request_wall_seconds": 8.529014,
+    "measured_request_wall_seconds": 6.713897,
+    "measured_attempts": 7,
+    "measured_accepts": 9,
+    "profile_cumulative_round_7_ms": {
+      "round": 1047.8,
+      "draft": 373.4,
+      "markov": 247.4,
+      "verify": 674.0,
+      "verify_comp_sync": 656.8
+    },
+    "profile_cumulative_round_14_ms": {
+      "round": 925.4,
+      "draft": 251.4,
+      "markov": 185.4,
+      "verify": 673.6,
+      "verify_comp_sync": 598.8
+    },
+    "derived_measured_request_per_round_ms": {
+      "round": 803.0,
+      "draft": 129.4,
+      "markov": 123.4,
+      "verify": 673.2,
+      "verify_comp_sync": 540.8
+    }
+  },
+  "comparison": {
+    "candidate_over_control_measured_wall_ratio": 1.6298586350073587,
+    "candidate_wall_regression_percent": 62.98586350073586,
+    "promotion_gate_draft_ms_per_round_lt": 50.0,
+    "candidate_derived_draft_ms_per_round": 136.7,
+    "promotion_gate_passed": false
+  },
+  "output_contract": {
+    "prompt_sha256": "ce3894cd79412600c017961c75ab2eadafd456ba9500ea9fa3a2e7bd031666c5",
+    "content_sha256": "24a094625f378029978305b5f96ffdd69300ceb59cd85efad3bcc98544f7da8c",
+    "content_exact_between_candidate_control_and_prior_balanced_B2": true,
+    "finish_reason": "length",
+    "completion_tokens": 16,
+    "content": "Here are four concise, actionable improvements for speculative decoding while preserving exact greedy-token"
+  },
+  "provenance": {
+    "base_head": "2bb88d2",
+    "source_diff_sha256": "2f4050809e82e2f497764ac1dc8a232a27c4bbf8ee133febf31945302b3d5762",
+    "binary_sha256": "b3ce88382372425f24e6f3e9247bfdccb201ed9ac233c37bbfa78bb76d890442",
+    "model_path": "/private/tmp/dspark-lite-A",
+    "model_tree_manifest_sha256": "8b699721b4e8733ea9fd79bc8a9b6507dc20aeb9404c86ce5219a5e8c2cc2db0",
+    "request_body": "../b2-fast-default-balanced-max16-2026-08-09/boots/boot-01-B2/raw/request-body.json",
+    "server_exit": "candidate and control stopped by SIGINT with graceful exit 0",
+    "live_test_servers_after_run": 0
+  },
+  "caveats": [
+    "The schedule was candidate then control, not counterbalanced; this pilot rejects promotion but does not estimate a publishable speed ratio.",
+    "The profile fields are cumulative averages rounded to one decimal place; isolated request values are derived from rounds 14 minus rounds 7.",
+    "verify_comp_sync is a nested subset of verify, not an additive phase.",
+    "The fused lazy graph can move realized work between profile sub-buckets, so end-to-end wall time is the decisive no-go signal.",
+    "Exact output here covers one fixed temperature-zero 16-token request; it is not broad logit, stochastic, quality, or family equivalence evidence."
+  ]
+}

@@ -748,6 +748,14 @@ pub const Dsv4Model = struct {
     /// Emit the experimental-path engagement evidence once per model. Draft
     /// requests may race on the same model, so the first-use latch is atomic.
     ds_gpu_markov_ids_logged: std.atomic.Value(bool) = .init(false),
+    /// Default-off DSpark-draft-only grid.z Q/KV/O chain. This is load-time
+    /// owned by the model so serving a second model cannot accidentally change
+    /// the first model's exact draft path.
+    ds_draft_rows_chain: bool = false,
+    /// Test-only per-model override for the draft row-grid experiment.
+    ds_draft_rows_chain_test: ?bool = null,
+    /// One-time proof that this model actually dispatched the row-grid arm.
+    ds_draft_rows_chain_logged: std.atomic.Value(bool) = .init(false),
     /// Test-only override for the DSpark joined verify/deferred-row eval.
     /// Per-model ownership keeps parallel model tests isolated.
     ds_join_verify_eval_test: ?bool = null,
@@ -1254,6 +1262,10 @@ pub fn initModel(gpa: std.mem.Allocator, cfg: *const ModelConfig, dw: Dsv4Weight
     }
     const ds_block: usize = cfg.dsv4_dspark_block_size;
     const ds_block_effective = if (dspark_on) dsparkBlockCapFromEnv(ds_block) else ds_block;
+    // The grid.z Q/KV/O experiment is deliberately separate from the normal
+    // decode-chain switch: it is draft-only and must remain off unless this
+    // model was loaded with its exact opt-in spelling.
+    const ds_draft_rows_chain = dspark_on and dsparkDraftRowsChainFromEnv();
     if (ds_block_effective < ds_block) {
         log.info("dsv4: DSpark block cap engaged (effective={d}, configured={d})\n", .{ ds_block_effective, ds_block });
     }
@@ -1313,6 +1325,7 @@ pub fn initModel(gpa: std.mem.Allocator, cfg: *const ModelConfig, dw: Dsv4Weight
         .n_mtp = if (dspark_on) dw.layers.len - n_layers else 0,
         .ds_block = ds_block,
         .ds_block_effective = ds_block_effective,
+        .ds_draft_rows_chain = ds_draft_rows_chain,
         .ds_noise = cfg.dsv4_dspark_noise_token_id,
         .ds_rank = cfg.dsv4_dspark_markov_rank,
         .ds_targets = cfg.dsv4_dspark_target_layers,
@@ -1349,6 +1362,22 @@ fn dsparkBlockCapFromEnv(configured: usize) usize {
     return dsparkBlockCap(configured, raw);
 }
 
+/// Exact, default-off opt-in for the DSpark draft-only multi-row Q/KV/O
+/// chain. Keep parsing pure and narrow: a malformed environment must retain
+/// the byte-stable composed draft path.
+fn dsparkDraftRowsChain(raw: ?[]const u8) bool {
+    const text = raw orelse return false;
+    return std.mem.eql(u8, text, "1");
+}
+
+fn dsparkDraftRowsChainFromEnv() bool {
+    const raw: ?[]const u8 = if (std.c.getenv("MLX_SERVE_DSPARK_DRAFT_ROWS_CHAIN")) |value|
+        std.mem.span(value)
+    else
+        null;
+    return dsparkDraftRowsChain(raw);
+}
+
 test "dsv4: DSpark block cap accepts only bounded positive widths" {
     try testing.expectEqual(@as(usize, 5), dsparkBlockCap(5, null));
     try testing.expectEqual(@as(usize, 1), dsparkBlockCap(5, "1"));
@@ -1359,6 +1388,15 @@ test "dsv4: DSpark block cap accepts only bounded positive widths" {
     try testing.expectEqual(@as(usize, 5), dsparkBlockCap(5, "0"));
     try testing.expectEqual(@as(usize, 5), dsparkBlockCap(5, "6"));
     try testing.expectEqual(@as(usize, 0), dsparkBlockCap(0, "1"));
+}
+
+test "dsv4: DSpark draft row-grid chain requires exact opt-in" {
+    try testing.expect(!dsparkDraftRowsChain(null));
+    try testing.expect(dsparkDraftRowsChain("1"));
+    try testing.expect(!dsparkDraftRowsChain(""));
+    try testing.expect(!dsparkDraftRowsChain("0"));
+    try testing.expect(!dsparkDraftRowsChain("true"));
+    try testing.expect(!dsparkDraftRowsChain("01"));
 }
 
 fn dsparkProfileReportEvery() u64 {
@@ -3858,6 +3896,90 @@ test "dsv4: DSpark draft matches the oracle (DSV4_MINI)" {
                     try testing.expectEqualSlices(u32, capped_legacy.ids, capped_fast.ids);
                     try testing.expectEqualSlices(u8, std.mem.sliceAsBytes(capped_legacy.confidence), std.mem.sliceAsBytes(capped_fast.confidence));
                     try testing.expect(std.meta.eql(state_before, fingerprintDecodeState(&st)));
+                }
+            }
+
+            // Characterize, rather than bless, the proposal-numerics seam of
+            // the default-off grid.z arm. Its primitive byte contract lives in
+            // the real-geometry test below against direct one-row chains; the
+            // existing composed B>1 proposal is intentionally known to differ
+            // numerically. Here B=1 must remain byte-identical, while B2/B3/B5
+            // record ID/confidence/acceptance deltas from the same entry state.
+            if (use_gpu and i == 6) {
+                const saved_width = mdl.ds_block_effective;
+                const saved_chain_test = mdl.ds_draft_rows_chain_test;
+                const saved_markov_test = mdl.ds_gpu_markov_ids_test;
+                const saved_marker = mdl.ds_draft_rows_chain_logged.load(.monotonic);
+                const saved_dec_chain = dec_chain_state;
+                const saved_dec_chain_rows = dec_chain_rows_state;
+                defer {
+                    mdl.ds_block_effective = saved_width;
+                    dsparkDraftRowsChainSetForTest(&mdl, saved_chain_test);
+                    dsparkGpuMarkovIdsSetForTest(&mdl, saved_markov_test);
+                    mdl.ds_draft_rows_chain_logged.store(saved_marker, .monotonic);
+                    decChainSetForTest(saved_dec_chain);
+                    decChainRowsSetForTest(saved_dec_chain_rows);
+                }
+                decChainSetForTest(true);
+                decChainRowsSetForTest(true);
+                dsparkGpuMarkovIdsSetForTest(&mdl, false);
+                var entry = try snapshotDecodeState(&st, allocator);
+                defer entry.deinit();
+
+                for ([_]usize{ 1, 2, 3, 5 }) |width| {
+                    // `dsparkBeginWith` deliberately enforces the checkpoint
+                    // capacity, so only characterize a width this fixture can
+                    // submit to its real verifier.
+                    if (width > mdl.ds_block) {
+                        std.debug.print("[dspark-draft-row-grid] B={d}: skipped (checkpoint block={d})\n", .{ width, mdl.ds_block });
+                        continue;
+                    }
+                    mdl.ds_block_effective = width;
+                    dsparkDraftRowsChainSetForTest(&mdl, false);
+                    mdl.ds_draft_rows_chain_logged.store(false, .monotonic);
+                    var control = try dsparkDraft(&mdl, allocator, &st, trunk_tok);
+                    defer control.deinit(allocator);
+                    try testing.expect(std.meta.eql(state_before, fingerprintDecodeState(&st)));
+
+                    var control_round = try dsparkRoundWith(&mdl, allocator, &st, trunk_tok, &control);
+                    const control_accepted = control_round.accepted;
+                    control_round.deinit(allocator);
+                    restoreDecodeState(&st, &entry);
+                    try testing.expect(std.meta.eql(state_before, fingerprintDecodeState(&st)));
+
+                    dsparkDraftRowsChainSetForTest(&mdl, true);
+                    mdl.ds_draft_rows_chain_logged.store(false, .monotonic);
+                    var candidate = try dsparkDraft(&mdl, allocator, &st, trunk_tok);
+                    defer candidate.deinit(allocator);
+                    try testing.expect(std.meta.eql(state_before, fingerprintDecodeState(&st)));
+
+                    var candidate_round = try dsparkRoundWith(&mdl, allocator, &st, trunk_tok, &candidate);
+                    const candidate_accepted = candidate_round.accepted;
+                    candidate_round.deinit(allocator);
+                    restoreDecodeState(&st, &entry);
+                    try testing.expect(std.meta.eql(state_before, fingerprintDecodeState(&st)));
+
+                    const ids_equal = std.mem.eql(u32, control.ids, candidate.ids);
+                    const confidence_bits_equal = std.mem.eql(u8, std.mem.sliceAsBytes(control.confidence), std.mem.sliceAsBytes(candidate.confidence));
+                    const logits_bits_equal = std.mem.eql(u8, std.mem.sliceAsBytes(control.logits), std.mem.sliceAsBytes(candidate.logits));
+                    var confidence_max_abs: f32 = 0;
+                    for (control.confidence, candidate.confidence) |a, b| confidence_max_abs = @max(confidence_max_abs, @abs(a - b));
+                    std.debug.print("[dspark-draft-row-grid] B={d}: ids_equal={} confidence_bits_equal={} logits_bits_equal={} confidence_max_abs={e} accepted_control={d} accepted_candidate={d}\n", .{ width, ids_equal, confidence_bits_equal, logits_bits_equal, confidence_max_abs, control_accepted, candidate_accepted });
+
+                    if (width == 1) {
+                        // The row-grid candidate declines B=1, so this is the
+                        // hard default-path ownership guard.
+                        try testing.expect(ids_equal);
+                        try testing.expect(confidence_bits_equal);
+                        try testing.expect(logits_bits_equal);
+                        try testing.expectEqual(control_accepted, candidate_accepted);
+                        try testing.expect(!mdl.ds_draft_rows_chain_logged.load(.monotonic));
+                    } else {
+                        try testing.expect(mdl.ds_draft_rows_chain_logged.load(.monotonic));
+                        if (!ids_equal or !confidence_bits_equal or control_accepted != candidate_accepted) {
+                            std.debug.print("[dspark-draft-row-grid] B={d}: proposal numerics changed; leave default-off and reject if acceptance regresses in performance receipts\n", .{width});
+                        }
+                    }
                 }
             }
 
@@ -10140,6 +10262,37 @@ fn headLogitsBatchG(m: *const Dsv4Model, alloc: std.mem.Allocator, stream_g: mlx
 
 /// One DSpark stage's attention over the draft block: x [B, dim] f32
 /// (attn-normed), draft positions n..n+B-1, PLAIN rope (stages are ratio-0).
+fn dsparkDraftRowsChainSetForTest(m: *Dsv4Model, value: ?bool) void {
+    m.ds_draft_rows_chain_test = value;
+}
+
+/// Try the load-time, draft-only grid.z chain for a shape that has an exact
+/// post-0/post-1 row-grid implementation. A declined/build-failed kernel owns
+/// no output and falls through to the established composed DSpark path.
+fn dsparkDraftRowsChainTry(
+    m: *Dsv4Model,
+    x: mlx.mlx_array,
+    rows: usize,
+    H: usize,
+    D: usize,
+    rd: usize,
+    rms_w: ?mlx.mlx_array,
+    post: u8,
+    inverse: bool,
+    rr: *const RopeRows,
+) !?mlx.mlx_array {
+    const enabled = m.ds_draft_rows_chain_test orelse m.ds_draft_rows_chain;
+    // B=1 deliberately remains on the pre-existing composed path. The grid.z
+    // experiment is only a batched-draft arm, and POST=2 has no exact grid
+    // kernel contract.
+    if (!enabled or rows <= 1 or post > 1) return null;
+    const out3 = (try decChainRowsKernel(m, x, rows, H, D, rd, rms_w, post, inverse, rr)) orelse return null;
+    if (!m.ds_draft_rows_chain_logged.swap(true, .monotonic)) {
+        log.info("dsv4: DSpark draft row-grid Q/KV/O chain engaged (post-0/post-1 only)\n", .{});
+    }
+    return out3;
+}
+
 fn dsparkAttentionG(m: *Dsv4Model, st: *Dsv4DecodeState, sti: usize, x_g: mlx.mlx_array, B: usize, rr: *const RopeRows) !mlx.mlx_array {
     const li = m.n_layers + sti;
     const ly = &m.dw.layers[li];
@@ -10160,6 +10313,9 @@ fn dsparkAttentionG(m: *Dsv4Model, st: *Dsv4DecodeState, sti: usize, x_g: mlx.ml
     const q3 = blk: {
         const q_flat = try gpuQmmB(&ly.wq_b, qr_n, m.s);
         defer _ = mlx.mlx_array_free(q_flat);
+        if (try dsparkDraftRowsChainTry(m, q_flat, B, nh, hd, rd, m.ones_hd_g, 0, false, rr)) |q_grid| {
+            break :blk q_grid;
+        }
         const qshape = [_]c_int{ bc, @intCast(nh), @intCast(hd) };
         const q_r = try gpuReshape(q_flat, &qshape, m.s);
         defer _ = mlx.mlx_array_free(q_r);
@@ -10173,6 +10329,11 @@ fn dsparkAttentionG(m: *Dsv4Model, st: *Dsv4DecodeState, sti: usize, x_g: mlx.ml
     const kv_fin = blk: {
         const kv0 = try gpuQmmB(&ly.wkv, x_g, m.s);
         defer _ = mlx.mlx_array_free(kv0);
+        if (try dsparkDraftRowsChainTry(m, kv0, B, 1, hd, rd, h.kv_norm_g, 1, false, rr)) |kv_grid| {
+            defer _ = mlx.mlx_array_free(kv_grid);
+            const kvshape = [_]c_int{ bc, @intCast(hd) };
+            break :blk try gpuReshape(kv_grid, &kvshape, m.s);
+        }
         const kv_n = try gpuRms(kv0, h.kv_norm_g, m.eps, m.s);
         defer _ = mlx.mlx_array_free(kv_n);
         const kv_rot = try gpuRopeTailRows(kv_n, rd, rr.cos, rr.sin, false, m.s);
@@ -10228,7 +10389,12 @@ fn dsparkAttentionG(m: *Dsv4Model, st: *Dsv4DecodeState, sti: usize, x_g: mlx.ml
     defer _ = mlx.mlx_array_free(p_real);
     const o = try gpuOp2(mlx.mlx_matmul, p_real, kmat, m.s); // [B, nh, hd]
     defer _ = mlx.mlx_array_free(o);
-    const o_inv = try gpuRopeTailRows(o, rd, rr.cos, rr.sin, true, m.s);
+    const o_inv = blk: {
+        if (try dsparkDraftRowsChainTry(m, o, B, nh, hd, rd, null, 0, true, rr)) |o_grid| {
+            break :blk o_grid;
+        }
+        break :blk try gpuRopeTailRows(o, rd, rr.cos, rr.sin, true, m.s);
+    };
     defer _ = mlx.mlx_array_free(o_inv);
     // grouped low-rank O (the attentionBatch tail)
     const og = m.o_groups;
@@ -12166,7 +12332,7 @@ test "dsv4: grid-z decode-chain rows toggle overrides independently" {
     try testing.expect(decChainRowsEnabled());
 }
 
-test "dsv4: grid-z decode-chain path exactly matches one-row kernels (GPU)" {
+test "dsv4: DSpark draft row-grid candidate exactly matches serial rows at serving geometry (GPU)" {
     if (mlx.noGpuBackend()) return;
     const s = mlx.gpuStream();
     defer _ = mlx.mlx_stream_free(s);
@@ -12217,6 +12383,9 @@ test "dsv4: grid-z decode-chain path exactly matches one-row kernels (GPU)" {
         var m: Dsv4Model = undefined;
         m.s = s;
         m.eps = 1e-6;
+        m.ds_draft_rows_chain = false;
+        m.ds_draft_rows_chain_test = true;
+        m.ds_draft_rows_chain_logged = .init(false);
         const half = tc.rd / 2;
         const ws = try alloc.alloc(f32, tc.D);
         defer alloc.free(ws);
@@ -12224,6 +12393,29 @@ test "dsv4: grid-z decode-chain path exactly matches one-row kernels (GPU)" {
         const wshape = [_]c_int{@intCast(tc.D)};
         const w = uploadF32(ws, &wshape);
         defer _ = mlx.mlx_array_free(w);
+
+        // B=1 is intentionally not a grid.z candidate: preserving the
+        // established composed path makes the one-row arm byte-stable.
+        {
+            const xs = try alloc.alloc(f32, tc.H * tc.D);
+            defer alloc.free(xs);
+            for (xs) |*v| v.* = (rng.random().float(f32) - 0.5) * 4.0;
+            const xshape = [_]c_int{ 1, @intCast(tc.H * tc.D) };
+            const x = uploadF32(xs, &xshape);
+            defer _ = mlx.mlx_array_free(x);
+            const cos_h = try alloc.alloc(f32, half);
+            defer alloc.free(cos_h);
+            const sin_h = try alloc.alloc(f32, half);
+            defer alloc.free(sin_h);
+            for (cos_h) |*v| v.* = (rng.random().float(f32) - 0.5) * 2.0;
+            for (sin_h) |*v| v.* = (rng.random().float(f32) - 0.5) * 2.0;
+            const rshape = [_]c_int{ 1, @intCast(half) };
+            const rr = RopeRows{ .cos = uploadF32(cos_h, &rshape), .sin = uploadF32(sin_h, &rshape) };
+            defer _ = mlx.mlx_array_free(rr.cos);
+            defer _ = mlx.mlx_array_free(rr.sin);
+            try testing.expect((try dsparkDraftRowsChainTry(&m, x, 1, tc.H, tc.D, tc.rd, if (tc.rms) w else null, tc.post, tc.inv, &rr)) == null);
+            try testing.expect(!m.ds_draft_rows_chain_logged.load(.monotonic));
+        }
 
         for (2..7) |C| {
             const xs = try alloc.alloc(f32, C * tc.H * tc.D);
@@ -12248,13 +12440,14 @@ test "dsv4: grid-z decode-chain path exactly matches one-row kernels (GPU)" {
             defer _ = mlx.mlx_array_free(expected);
             try testing.expect(dec_chain_hits >= exact_hits + C); // direct one-row kernel calls
             const multi_hits = dec_chain_hits;
-            const multi = (try decChainRowsKernel(&m, x, C, tc.H, tc.D, tc.rd, if (tc.rms) w else null, tc.post, tc.inv, &rr)) orelse {
-                std.debug.print("grid-z decode-chain DECLINED {s} C={d}\n", .{ tc.name, C });
+            const multi = (try dsparkDraftRowsChainTry(&m, x, C, tc.H, tc.D, tc.rd, if (tc.rms) w else null, tc.post, tc.inv, &rr)) orelse {
+                std.debug.print("DSpark draft row-grid candidate DECLINED {s} C={d}\n", .{ tc.name, C });
                 try testing.expect(false);
                 unreachable;
             };
             defer _ = mlx.mlx_array_free(multi);
             try testing.expect(dec_chain_hits > multi_hits); // promoted grid.z route engaged
+            try testing.expect(m.ds_draft_rows_chain_logged.load(.monotonic));
             const multi_shape = [_]c_int{ @intCast(C), @intCast(tc.H), @intCast(tc.D) };
             try Ops.expectShape(multi, &multi_shape);
             const flat_shape = [_]c_int{ @intCast(C), @intCast(tc.H * tc.D) };
@@ -12266,6 +12459,33 @@ test "dsv4: grid-z decode-chain path exactly matches one-row kernels (GPU)" {
             const multi_host = try toHostF32(alloc, multi_flat, C * tc.H * tc.D, s);
             defer alloc.free(multi_host);
             try Ops.expectExact(tc.name, C, expected_host, multi_host);
+        }
+
+        // The test hook must not turn a failed/disabled row-grid dispatch into
+        // a partially-owned result or a false engagement marker.
+        {
+            const failure_rows_state = dec_chain_rows_state;
+            defer decChainRowsSetForTest(failure_rows_state);
+            decChainRowsSetForTest(false);
+            m.ds_draft_rows_chain_logged.store(false, .monotonic);
+            const xs = try alloc.alloc(f32, 2 * tc.H * tc.D);
+            defer alloc.free(xs);
+            @memset(xs, 0.25);
+            const xshape = [_]c_int{ 2, @intCast(tc.H * tc.D) };
+            const x = uploadF32(xs, &xshape);
+            defer _ = mlx.mlx_array_free(x);
+            const cos_h = try alloc.alloc(f32, 2 * half);
+            defer alloc.free(cos_h);
+            const sin_h = try alloc.alloc(f32, 2 * half);
+            defer alloc.free(sin_h);
+            @memset(cos_h, 1.0);
+            @memset(sin_h, 0.0);
+            const rshape = [_]c_int{ 2, @intCast(half) };
+            const rr = RopeRows{ .cos = uploadF32(cos_h, &rshape), .sin = uploadF32(sin_h, &rshape) };
+            defer _ = mlx.mlx_array_free(rr.cos);
+            defer _ = mlx.mlx_array_free(rr.sin);
+            try testing.expect((try dsparkDraftRowsChainTry(&m, x, 2, tc.H, tc.D, tc.rd, if (tc.rms) w else null, tc.post, tc.inv, &rr)) == null);
+            try testing.expect(!m.ds_draft_rows_chain_logged.load(.monotonic));
         }
     }
 }
