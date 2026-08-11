@@ -1,0 +1,31 @@
+{
+  "receipt": "dsv4-pctree-phase1-2-3",
+  "date": "2026-08-10",
+  "worktree": "branch:dsv4-pctree-mlx-20260809",
+  "baseline": "68acdba",
+  "commands": [
+    "zig test src/pctree.zig",
+    "zig test src/pctree_batch.zig",
+    "DSV4_MINI=/tmp/dsv4-mini zig build test -Dtest-filter=PCTree -Doptimize=ReleaseFast --summary all",
+    "DSV4_MINI=/tmp/dsv4-mini zig build test -Dtest-filter=DSpark -Doptimize=ReleaseSafe"
+  ],
+  "results": {
+    "planner_unit": { "passed": 9, "failed": 0, "suite": "pctree.zig" },
+    "batched_agreement": { "passed": 3, "failed": 0, "suite": "pctree_batch.zig" },
+    "ds4_oracle_run": { "passed": 22, "failed": 0, "filter": "PCTree", "optimize": "ReleaseFast", "env": "DSV4_MINI=/tmp/dsv4-mini" },
+    "dspark_exactness_gate": { "passed": 15, "failed": 0, "filter": "DSpark", "optimize": "ReleaseSafe" }
+  },
+  "oracle_output": [
+    "[pctree-oracle] i=6: k=1 planner == runtime chain, k=3 winner==chain NO (winner { 31, 42 } chain { 31, 42, 26, 26 })",
+    "[pctree-oracle] i=9: k=1 planner == runtime chain, k=3 winner==chain NO (winner { 13, 26 } chain { 13, 26, 26, 26 })",
+    "[pctree-oracle] i=12: k=1 planner == runtime chain, k=3 winner==chain NO (winner { 48, 12 } chain { 48, 12, 30, 26 })"
+  ],
+  "interpretation": {
+    "k1_exactness": "planner k=1 equals the runtime DSpark chain token-for-token at prefixes 6/9/12 (CPU reference arm, gate open)",
+    "k3_winner": "k=3 winner equals the chain PREFIX then truncates under the n=B+1 retain budget; no branch beat the chain on this random-weight mini; acceptance value of trees UNPROVEN",
+    "hook_safety": "capture hook is nil-default; 15/15 DSpark exactness gates pass with the hook present"
+  },
+  "environment": {
+    "note": "w2-g64 sweep running on the host; two DSV4_MINI tests (anchored rollback replays; nextPld on a chokepoint-disabled generator) fail under RAM/GPU pressure on the PRISTINE baseline too (verified via git show HEAD:src/deepseek_v4.zig probe at seed 0xb920be53)"
+  }
+}

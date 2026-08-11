@@ -29,6 +29,7 @@ const model = @import("model.zig");
 const transformer = @import("transformer.zig");
 const log = @import("log.zig");
 const router_trace_mod = @import("router_trace.zig");
+const pctree = @import("pctree.zig");
 
 const ModelConfig = model.ModelConfig;
 const QuantParams = transformer.QuantParams;
@@ -619,6 +620,17 @@ const HostLayer = struct {
     idx_comp: ?HostComp,
 };
 
+/// Default-off PCTree oracle capture: the unbiased [B, V] shared-head logits
+/// block that a DSpark draft reads. A test allocates the buffer, arms the
+/// capture, runs one draft, and feeds the captured rows to the pure-CPU
+/// PCTree planner (src/pctree.zig). Never touched by serving.
+pub const Dsv4BaseLogitsCapture = struct {
+    buf: []f32,
+    b: usize,
+    vocab: usize,
+    done: bool = false,
+};
+
 pub const Dsv4Model = struct {
     dw: Dsv4Weights,
     hl: []HostLayer,
@@ -768,8 +780,15 @@ pub const Dsv4Model = struct {
     /// serially. This remains default-off because it trades host compressor
     /// work in verify for an exact serial commit in finish.
     ds_replay_commit_test: ?bool = null,
+    /// Test-only override for the already-supported serial verifier. This is
+    /// deliberately per-model and nil by default: PCTree's branch oracle must
+    /// exercise the B1-B5 reference verifier without changing serving or
+    /// relying on a process-wide environment mutation.
+    ds_serial_verify_test: ?bool = null,
     /// One-time proof that this model used the replay-commit verifier arm.
     ds_replay_commit_logged: std.atomic.Value(bool) = .init(false),
+    /// PCTree oracle capture, armed only by tests (see Dsv4BaseLogitsCapture).
+    ds_capture_base_logits: ?*Dsv4BaseLogitsCapture = null,
     /// Per-round cost audit, armed by `MLX_SERVE_DSPARK_PROFILE` at load.
     ds_prof: ?DsparkProfile = null,
     /// Profile report cadence. Defaults to 16 shipping rounds; diagnostics may
@@ -3820,12 +3839,12 @@ test "dsv4: DSpark draft matches the oracle (DSV4_MINI)" {
     const cfg = try model.parseConfigFromJson(allocator, cfg_json);
     const fx_path = try std.fmt.allocPrint(allocator, "{s}/fixtures.json", .{path});
     defer allocator.free(fx_path);
-    const fx_json = readAll(io, allocator, fx_path) catch return;
+    const fx_json = try readAll(io, allocator, fx_path);
     defer allocator.free(fx_json);
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, fx_json, .{});
     defer parsed.deinit();
     const root = parsed.value.object;
-    if (root.get("dspark.6.out_ids") == null) return;
+    try testing.expect(root.get("dspark.6.out_ids") != null);
 
     const shard_path = try std.fmt.allocPrint(allocator, "{s}/model-mini.safetensors", .{path});
     defer allocator.free(shard_path);
@@ -4158,6 +4177,383 @@ test "dsv4: extendStateAllLogits rows match serial decode at every position (DSV
             }
             std.debug.print("dsv4 extendStateAllLogits rows (gpu={}): {d}/{d} argmax agree\n", .{ use_gpu, agree, B });
         }
+    }
+}
+
+/// PCTree oracle Markov scorer: the runtime's own bias matvec
+/// (w1 row take -> [1,rank] f32 -> w2_t matmul -> [1,V] host f32), which is
+/// bit-identical to the operands the DSpark draft loop adds to the captured
+/// base logits.
+const PctreeOracleCtx = struct {
+    m: *Dsv4Model,
+    gpa: std.mem.Allocator,
+};
+
+fn requirePctreeFixtureField(value: ?std.json.Value) !void {
+    if (value == null) return error.MissingPctreeFixtureField;
+}
+
+test "dsv4: PCTree fixture contract rejects a missing required field" {
+    try testing.expectError(error.MissingPctreeFixtureField, requirePctreeFixtureField(null));
+}
+
+fn pctreeOracleMarkovEval(ctx: ?*anyopaque, token: u32, out: []f32) anyerror!void {
+    const c: *PctreeOracleCtx = @ptrCast(@alignCast(ctx.?));
+    const idx_shape = [_]c_int{1};
+    const idx_val = [_]i32{@intCast(token)};
+    const idx = mlx.mlx_array_new_data(&idx_val, &idx_shape, 1, .int32);
+    defer _ = mlx.mlx_array_free(idx);
+    const w1f = try dsparkMarkovRow(c.m, idx, false);
+    defer _ = mlx.mlx_array_free(w1f);
+    const bias = try gpuOp2(mlx.mlx_matmul, w1f, c.m.ds_markov_w2_t.?, c.m.s); // [1, V]
+    defer _ = mlx.mlx_array_free(bias);
+    const h = try toHostF32(c.gpa, bias, out.len, c.m.s);
+    defer c.gpa.free(h);
+    @memcpy(out, h);
+}
+
+test "dsv4: PCTree planner k=1 reproduces the runtime DSpark chain (DSV4_MINI)" {
+    testEnableDspark();
+    // The serial branch oracle: capture the UNBIASED shared-head block the
+    // draft loop reads, feed it (plus the runtime's own Markov bias matvec)
+    // to the pure-CPU PCTree planner, and require the planner's k=1 chain to
+    // equal the runtime's drafted ids EXACTLY at several prefixes. This is
+    // the CPU/MLX reference-agreement gate for the batched top-k: identical
+    // z = L + Markov f32 operands must select identical first-max tokens.
+    const path_z = std.c.getenv("DSV4_MINI") orelse return;
+    const path = std.mem.span(path_z);
+    const allocator = testing.allocator;
+
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const readAll = struct {
+        fn f(io_: std.Io, alloc: std.mem.Allocator, p: []const u8) ![]u8 {
+            const file = try std.Io.Dir.openFileAbsolute(io_, p, .{});
+            defer file.close(io_);
+            var rb: [4096]u8 = undefined;
+            var rs = file.reader(io_, &rb);
+            return try rs.interface.allocRemaining(alloc, .limited(1 << 26));
+        }
+    }.f;
+    const cfg_path = try std.fmt.allocPrint(allocator, "{s}/config.json", .{path});
+    defer allocator.free(cfg_path);
+    const cfg_json = try readAll(io, allocator, cfg_path);
+    defer allocator.free(cfg_json);
+    const cfg = try model.parseConfigFromJson(allocator, cfg_json);
+    const fx_path = try std.fmt.allocPrint(allocator, "{s}/fixtures.json", .{path});
+    defer allocator.free(fx_path);
+    const fx_json = try readAll(io, allocator, fx_path);
+    defer allocator.free(fx_json);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, fx_json, .{});
+    defer parsed.deinit();
+    const root = parsed.value.object;
+    try requirePctreeFixtureField(root.get("dspark.6.out_ids"));
+
+    const ids_v = root.get("input_ids").?.array.items;
+    const ids = try allocator.alloc(u32, ids_v.len);
+    defer allocator.free(ids);
+    for (ids, ids_v) |*o, v| o.* = @intCast(v.integer);
+
+    const shard_path = try std.fmt.allocPrint(allocator, "{s}/model-mini.safetensors", .{path});
+    defer allocator.free(shard_path);
+    var weights = try model.loadWeightsSingleFile(allocator, shard_path);
+    defer weights.deinit();
+    const dw = try loadDsv4Weights(allocator, &cfg, &weights);
+    const s = mlx.mlx_default_cpu_stream_new();
+    defer _ = mlx.mlx_stream_free(s);
+    var mdl = try initModel(allocator, &cfg, dw, s);
+    defer mdl.deinit();
+
+    inline for ([_]usize{ 6, 9, 12 }) |i| {
+        var st = try initDecodeState(&mdl, allocator);
+        defer deinitDecodeState(&st);
+        {
+            const pl = try prefillIntoState(&mdl, allocator, &st, ids[0 .. i + 1]);
+            defer allocator.free(pl);
+        }
+        const key_tok = std.fmt.comptimePrint("dspark.{d}.trunk_tok", .{i});
+        const trunk_tok: u32 = @intCast(root.get(key_tok).?.integer);
+        mdl.ds_conf_thr = -std.math.inf(f32); // gate open: draft the whole block
+        dsparkGpuMarkovIdsSetForTest(&mdl, false); // host-loop reference arm
+
+        const B = mdl.ds_block_effective;
+        const cap_buf = try allocator.alloc(f32, B * mdl.vocab);
+        defer allocator.free(cap_buf);
+        var cap = Dsv4BaseLogitsCapture{ .buf = cap_buf, .b = B, .vocab = mdl.vocab };
+        dsv4CaptureBaseLogitsSetForTest(&mdl, &cap);
+        defer dsv4CaptureBaseLogitsSetForTest(&mdl, null);
+
+        var draft = try dsparkDraft(&mdl, allocator, &st, trunk_tok);
+        defer draft.deinit(allocator);
+        try testing.expect(cap.done);
+        try testing.expectEqual(@as(usize, B), draft.len);
+        try testing.expectEqual(trunk_tok, draft.ids[0]);
+
+        var oc = PctreeOracleCtx{ .m = &mdl, .gpa = allocator };
+        const scorer = pctree.MarkovScorer{ .ctx = &oc, .eval = pctreeOracleMarkovEval };
+
+        // k=1: the pure CPU chain must equal the runtime chain exactly.
+        var p1 = try pctree.plan(allocator, B, 1, B + 1, mdl.vocab, cap_buf, scorer, trunk_tok);
+        defer p1.deinit();
+        try testing.expectEqualSlices(u32, draft.ids[1 .. 1 + draft.len], p1.flat_tokens[1..]);
+
+        // Determinism: a second identical plan is byte-equal.
+        var p2 = try pctree.plan(allocator, B, 1, B + 1, mdl.vocab, cap_buf, scorer, trunk_tok);
+        defer p2.deinit();
+        try testing.expectEqualSlices(u32, p1.flat_tokens, p2.flat_tokens);
+        try testing.expectEqualSlices(bool, p1.ancestor_mask, p2.ancestor_mask);
+
+        // k>1 tree: characterize (never bless) branch-vs-chain divergence.
+        var p3 = try pctree.plan(allocator, B, mdl.ds_block, B + 1, mdl.vocab, cap_buf, scorer, trunk_tok);
+        defer p3.deinit();
+        const wtok = try allocator.alloc(u32, p3.winner_path.len);
+        defer allocator.free(wtok);
+        for (p3.winner_path, 0..) |r, ri| wtok[ri] = p3.flat_tokens[r];
+        const branch_matches_chain = p3.winner_path.len == draft.len + 1 and std.mem.eql(u32, wtok, draft.ids[0 .. draft.len + 1]);
+        std.debug.print("[pctree-oracle] i={d}: k=1 planner == runtime chain, k={d} winner==chain {s} (winner {any} chain {any})\n", .{ i, mdl.ds_block, if (branch_matches_chain) "YES" else "NO", wtok, draft.ids[0 .. draft.len + 1] });
+    }
+}
+
+test "dsv4: PCTree retained branches use the serial B1-B5 verifier (DSV4_MINI)" {
+    testEnableDspark();
+    // This is an acceptance oracle, not a tree verifier: it evaluates every
+    // retained k>1 leaf separately through dsparkBeginWith's
+    // serial verifier and dsparkFinish's existing rollback/commit path. The
+    // measurement is therefore meaningful only as "does another proposal
+    // survive the SAME target verifier for longer than k=1?" It neither
+    // batches branches nor makes a serving/performance claim.
+    const path_z = std.c.getenv("DSV4_MINI") orelse return;
+    const path = std.mem.span(path_z);
+    const allocator = testing.allocator;
+
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const readAll = struct {
+        fn f(io_: std.Io, alloc: std.mem.Allocator, p: []const u8) ![]u8 {
+            const file = try std.Io.Dir.openFileAbsolute(io_, p, .{});
+            defer file.close(io_);
+            var rb: [4096]u8 = undefined;
+            var rs = file.reader(io_, &rb);
+            return try rs.interface.allocRemaining(alloc, .limited(1 << 26));
+        }
+    }.f;
+    const cfg_path = try std.fmt.allocPrint(allocator, "{s}/config.json", .{path});
+    defer allocator.free(cfg_path);
+    const cfg_json = try readAll(io, allocator, cfg_path);
+    defer allocator.free(cfg_json);
+    const cfg = try model.parseConfigFromJson(allocator, cfg_json);
+    const fx_path = try std.fmt.allocPrint(allocator, "{s}/fixtures.json", .{path});
+    defer allocator.free(fx_path);
+    const fx_json = try readAll(io, allocator, fx_path);
+    defer allocator.free(fx_json);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, fx_json, .{});
+    defer parsed.deinit();
+    const root = parsed.value.object;
+    try requirePctreeFixtureField(root.get("dspark.6.out_ids"));
+
+    const ids_v = root.get("input_ids").?.array.items;
+    const ids = try allocator.alloc(u32, ids_v.len);
+    defer allocator.free(ids);
+    for (ids, ids_v) |*o, v| o.* = @intCast(v.integer);
+
+    const shard_path = try std.fmt.allocPrint(allocator, "{s}/model-mini.safetensors", .{path});
+    defer allocator.free(shard_path);
+    var weights = try model.loadWeightsSingleFile(allocator, shard_path);
+    defer weights.deinit();
+    const dw = try loadDsv4Weights(allocator, &cfg, &weights);
+    const s = mlx.mlx_default_cpu_stream_new();
+    defer _ = mlx.mlx_stream_free(s);
+    var mdl = try initModel(allocator, &cfg, dw, s);
+    defer mdl.deinit();
+    const saved_serial_verify = mdl.ds_serial_verify_test;
+    defer dsparkSerialVerifySetForTest(&mdl, saved_serial_verify);
+
+    const pathTokens = struct {
+        fn f(alloc: std.mem.Allocator, p: *const pctree.Plan, row: []const usize) ![]u32 {
+            if (row.len < 2 or row[0] != 0) return error.InvalidPctreePath;
+            const out = try alloc.alloc(u32, row.len - 1);
+            for (row[1..], 0..) |rank, i| out[i] = p.flat_tokens[rank];
+            return out;
+        }
+    }.f;
+    const argmax = struct {
+        fn f(row: []const f32) u32 {
+            var best: usize = 0;
+            for (row, 0..) |value, j| {
+                if (value > row[best]) best = j;
+            }
+            return @intCast(best);
+        }
+    }.f;
+    const verifyAgainstSerial = struct {
+        fn f(
+            mm: *Dsv4Model,
+            alloc: std.mem.Allocator,
+            prefix: []const u32,
+            trunk_token: u32,
+            branch: []const u32,
+        ) !PctreeBranchAcceptance {
+            // Candidate: existing serial DSpark verifier + existing
+            // dsparkFinish rollback/commit. The helper rejects a batched
+            // fallback, so an unarmed reference cannot yield a result.
+            var candidate = try initDecodeState(mm, alloc);
+            defer deinitDecodeState(&candidate);
+            const candidate_prefill = try prefillIntoState(mm, alloc, &candidate, prefix);
+            alloc.free(candidate_prefill);
+            const result = try pctreeVerifyBranchSerial(mm, alloc, &candidate, trunk_token, branch);
+            if (candidate.anchors) |anchors| try testing.expect(!anchors.armed);
+            const candidate_fp = fingerprintDecodeState(&candidate);
+            const candidate_hash = try hashDecodeStateContent(mm, &candidate, alloc);
+
+            // Independent serial replay from the exact same prefix. This
+            // proves both partial rollback and full-accept commit leave the
+            // branch state at exactly entry + root + accepted prefix.
+            var serial = try initDecodeState(mm, alloc);
+            defer deinitDecodeState(&serial);
+            const serial_prefill = try prefillIntoState(mm, alloc, &serial, prefix);
+            alloc.free(serial_prefill);
+            var ref_next: u32 = undefined;
+            {
+                const logits = try decodeStep(mm, alloc, &serial, trunk_token);
+                defer alloc.free(logits);
+                ref_next = argmax(logits);
+            }
+            for (branch[0..result.accepted]) |token| {
+                const logits = try decodeStep(mm, alloc, &serial, token);
+                defer alloc.free(logits);
+                ref_next = argmax(logits);
+            }
+            try testing.expectEqual(result.next_token, ref_next);
+            try testing.expect(std.meta.eql(candidate_fp, fingerprintDecodeState(&serial)));
+            try testing.expectEqual(candidate_hash, try hashDecodeStateContent(mm, &serial, alloc));
+            return result;
+        }
+    }.f;
+    const serialTargetBranch = struct {
+        fn f(mm: *Dsv4Model, alloc: std.mem.Allocator, prefix: []const u32, trunk_token: u32, len: usize) ![]u32 {
+            var state = try initDecodeState(mm, alloc);
+            defer deinitDecodeState(&state);
+            const prefetched = try prefillIntoState(mm, alloc, &state, prefix);
+            defer alloc.free(prefetched);
+            const branch = try alloc.alloc(u32, len);
+            errdefer alloc.free(branch);
+            var previous = trunk_token;
+            for (branch) |*token| {
+                const logits = try decodeStep(mm, alloc, &state, previous);
+                defer alloc.free(logits);
+                token.* = argmax(logits);
+                previous = token.*;
+            }
+            return branch;
+        }
+    }.f;
+
+    inline for ([_]usize{ 6, 9, 12 }) |i| {
+        var draft_state = try initDecodeState(&mdl, allocator);
+        defer deinitDecodeState(&draft_state);
+        const draft_prefill = try prefillIntoState(&mdl, allocator, &draft_state, ids[0 .. i + 1]);
+        defer allocator.free(draft_prefill);
+        const key_tok = std.fmt.comptimePrint("dspark.{d}.trunk_tok", .{i});
+        const trunk_token: u32 = @intCast(root.get(key_tok).?.integer);
+        mdl.ds_conf_thr = -std.math.inf(f32); // full fixed-size comparison
+        dsparkGpuMarkovIdsSetForTest(&mdl, false); // host-loop draft reference
+
+        const B = mdl.ds_block_effective;
+        if (i == 6) {
+            // Capability rejection is intentionally before dsparkBeginWith.
+            // A disabled serial verifier must leave a prefilled state exactly
+            // untouched, rather than arm a speculative round and then fail.
+            dsparkSerialVerifySetForTest(&mdl, false);
+            var rejected = try initDecodeState(&mdl, allocator);
+            defer deinitDecodeState(&rejected);
+            const rejected_prefill = try prefillIntoState(&mdl, allocator, &rejected, ids[0 .. i + 1]);
+            defer allocator.free(rejected_prefill);
+            const before = fingerprintDecodeState(&rejected);
+            try testing.expectError(error.PctreeSerialVerifierNotArmed, pctreeVerifyBranchSerial(&mdl, allocator, &rejected, trunk_token, &[_]u32{0}));
+            try testing.expect(std.meta.eql(before, fingerprintDecodeState(&rejected)));
+        }
+        dsparkSerialVerifySetForTest(&mdl, true);
+        if (i == 6) {
+            // Token-range rejection is also pre-mutation.  This prevents an
+            // invalid planner output from reaching the DSpark gather path.
+            var invalid = try initDecodeState(&mdl, allocator);
+            defer deinitDecodeState(&invalid);
+            const invalid_prefill = try prefillIntoState(&mdl, allocator, &invalid, ids[0 .. i + 1]);
+            defer allocator.free(invalid_prefill);
+            const before = fingerprintDecodeState(&invalid);
+            const invalid_token: u32 = @intCast(mdl.vocab);
+            try testing.expectError(error.InvalidPctreeBranch, pctreeVerifyBranchSerial(&mdl, allocator, &invalid, trunk_token, &[_]u32{invalid_token}));
+            try testing.expect(std.meta.eql(before, fingerprintDecodeState(&invalid)));
+        }
+        const cap_buf = try allocator.alloc(f32, B * mdl.vocab);
+        defer allocator.free(cap_buf);
+        var cap = Dsv4BaseLogitsCapture{ .buf = cap_buf, .b = B, .vocab = mdl.vocab };
+        dsv4CaptureBaseLogitsSetForTest(&mdl, &cap);
+        defer dsv4CaptureBaseLogitsSetForTest(&mdl, null);
+        var draft = try dsparkDraft(&mdl, allocator, &draft_state, trunk_token);
+        defer draft.deinit(allocator);
+        try testing.expect(cap.done);
+        try testing.expectEqual(B, draft.len);
+
+        var oc = PctreeOracleCtx{ .m = &mdl, .gpa = allocator };
+        const scorer = pctree.MarkovScorer{ .ctx = &oc, .eval = pctreeOracleMarkovEval };
+        var k1 = try pctree.plan(allocator, B, 1, B + 1, mdl.vocab, cap_buf, scorer, trunk_token);
+        defer k1.deinit();
+        const k1_branch = try pathTokens(allocator, &k1, k1.winner_path);
+        defer allocator.free(k1_branch);
+        try testing.expectEqualSlices(u32, draft.ids[1 .. B + 1], k1_branch);
+
+        // Run both identical k=1 spellings independently. Equal ids alone
+        // are not enough: their accepted length, correction token, rollback,
+        // and final state must match through the serial B1-B5 verifier.
+        const runtime_k1 = try verifyAgainstSerial(&mdl, allocator, ids[0 .. i + 1], trunk_token, draft.ids[1 .. B + 1]);
+        const planner_k1 = try verifyAgainstSerial(&mdl, allocator, ids[0 .. i + 1], trunk_token, k1_branch);
+        try testing.expectEqual(runtime_k1.accepted, planner_k1.accepted);
+        try testing.expectEqual(runtime_k1.next_token, planner_k1.next_token);
+
+        if (i == 6) {
+            // The random mini's natural tree branches all rejected at the
+            // first token.  Manufacture only the *proposal* from the serial
+            // target continuation so the existing serial verifier/finish seam
+            // is exercised through both a positive partial and full accept.
+            // Target math, emitted tokens, and the state comparison remain
+            // the ordinary source-faithful path.
+            try testing.expect(B >= 2);
+            const target_branch = try serialTargetBranch(&mdl, allocator, ids[0 .. i + 1], trunk_token, B);
+            defer allocator.free(target_branch);
+            const full = try verifyAgainstSerial(&mdl, allocator, ids[0 .. i + 1], trunk_token, target_branch);
+            try testing.expectEqual(B, full.accepted);
+
+            const partial_branch = try allocator.dupe(u32, target_branch);
+            defer allocator.free(partial_branch);
+            partial_branch[B - 1] = if (partial_branch[B - 1] == 0) 1 else 0;
+            const partial = try verifyAgainstSerial(&mdl, allocator, ids[0 .. i + 1], trunk_token, partial_branch);
+            try testing.expectEqual(B - 1, partial.accepted);
+            try testing.expectEqual(target_branch[B - 1], partial.next_token);
+        }
+
+        const tree_k: usize = 3;
+        var tree = try pctree.plan(allocator, B, tree_k, 1 + B * tree_k, mdl.vocab, cap_buf, scorer, trunk_token);
+        defer tree.deinit();
+        var retained_leaf_branches: usize = 0;
+        var full_depth_branches: usize = 0;
+        var distinct_from_k1: usize = 0;
+        var best: ?PctreeBranchAcceptance = null;
+        for (tree.retrieve_rows) |row| {
+            retained_leaf_branches += 1;
+            if (row.len == B + 1) full_depth_branches += 1;
+            const branch = try pathTokens(allocator, &tree, row);
+            defer allocator.free(branch);
+            const result = try verifyAgainstSerial(&mdl, allocator, ids[0 .. i + 1], trunk_token, branch);
+            if (!std.mem.eql(u32, branch, k1_branch)) distinct_from_k1 += 1;
+            if (best == null or result.accepted > best.?.accepted) best = result;
+        }
+        try testing.expect(retained_leaf_branches > 0);
+        try testing.expect(distinct_from_k1 > 0);
+        const tree_best = best.?;
+        const delta: isize = @as(isize, @intCast(tree_best.accepted)) - @as(isize, @intCast(planner_k1.accepted));
+        std.debug.print(
+            "[pctree-acceptance] i={d}: k1 accepted={d} next={d}; tree k={d} retained_leaves={d} full_depth={d} distinct={d} best accepted={d} next={d} delta={d}\n",
+            .{ i, planner_k1.accepted, planner_k1.next_token, tree_k, retained_leaf_branches, full_depth_branches, distinct_from_k1, tree_best.accepted, tree_best.next_token, delta },
+        );
     }
 }
 
@@ -10799,6 +11195,24 @@ fn dsparkGpuMarkovIdsSetForTest(m: *Dsv4Model, value: ?bool) void {
     m.ds_gpu_markov_ids_test = value;
 }
 
+/// Test-only hook: arm the PCTree base-logits capture on `m`. The caller
+/// owns `cap` (including the buffer) and must keep it alive through the
+/// draft call.
+fn dsv4CaptureBaseLogitsSetForTest(m: *Dsv4Model, cap: ?*Dsv4BaseLogitsCapture) void {
+    m.ds_capture_base_logits = cap;
+}
+
+/// Test-only override for the pre-existing token-by-token DSpark verifier.
+/// No production caller sets this; nil preserves the environment-controlled
+/// behavior exactly.
+fn dsparkSerialVerifySetForTest(m: *Dsv4Model, value: ?bool) void {
+    m.ds_serial_verify_test = value;
+}
+
+fn dsparkSerialVerifyEnabled(m: *const Dsv4Model) bool {
+    return m.ds_serial_verify_test orelse (std.c.getenv("MLX_SERVE_DSPARK_SERIAL_VERIFY") != null);
+}
+
 fn dsparkGpuMarkovIdsEnabled(m: *const Dsv4Model, ds_trace: bool) bool {
     // Exact opt-in: do not silently accept other spellings as an experimental
     // speed path. The host loop remains the diagnostic/reference arm.
@@ -11111,6 +11525,16 @@ pub fn dsparkDraft(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, 
         };
         defer _ = mlx.mlx_array_free(logits_g);
 
+        // PCTree oracle capture (default-off): the unbiased shared-head
+        // block exactly as this path later reads it.
+        if (m.ds_capture_base_logits) |cap| {
+            std.debug.assert(cap.b == B and cap.vocab == m.vocab and cap.buf.len == B * m.vocab);
+            const lh = try toHostF32(a, logits_g, B * m.vocab, m.s);
+            defer a.free(lh);
+            @memcpy(cap.buf, lh);
+            cap.done = true;
+        }
+
         // The open confidence gate cannot truncate this block, so keep the
         // recurrence lazy: selector output -> next markov_w1 take. The one
         // typed batch eval below materializes the B ids and B confidence
@@ -11195,6 +11619,16 @@ pub fn dsparkDraft(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState, 
                 break :blk try gpuQmmB(&m.dw.head, hn, m.s);
             };
             defer _ = mlx.mlx_array_free(logits_g);
+
+            // PCTree oracle capture (default-off): the unbiased shared-head
+            // block the host loop below reads row-by-row.
+            if (m.ds_capture_base_logits) |cap| {
+                std.debug.assert(cap.b == B and cap.vocab == m.vocab and cap.buf.len == B * m.vocab);
+                const lh = try toHostF32(a, logits_g, B * m.vocab, m.s);
+                defer a.free(lh);
+                @memcpy(cap.buf, lh);
+                cap.done = true;
+            }
             for (0..B) |i| {
                 if (confidence[i] < m.ds_conf_thr) break;
                 const bias = try gpuOp2(mlx.mlx_matmul, w1f, m.ds_markov_w2_t.?, m.s); // [1, V]
@@ -11418,9 +11852,9 @@ pub fn dsparkBeginWith(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeSta
     // or in-place compressor-ring state exposed to a later request action.
     // The snapshot remains owned here until a pending is successfully returned.
     errdefer restoreDecodeState(st, &snap);
-    const serial_verify = std.c.getenv("MLX_SERVE_DSPARK_SERIAL_VERIFY") != null;
+    const serial_verify = dsparkSerialVerifyEnabled(m);
     const replay_commit = B > 0 and dsparkReplayCommitEnabled(m, st, serial_verify);
-    if (!replay_commit) {
+    if (!replay_commit and !serial_verify) {
         // Per-position anchors: a rejected tail becomes a truncate instead of
         // a second batched forward over the accepted prefix. Sized to the FULL
         // block so the buffers are allocated once and reused whatever the
@@ -11549,6 +11983,138 @@ pub fn dsparkFinish(m: *Dsv4Model, gpa: std.mem.Allocator, st: *Dsv4DecodeState,
     pending.phases.committed = @intCast(accepted + 1);
     pending.phases.submitted = @intCast(pending.b);
     return .{ .tokens = tokens, .next_token = next_token, .accepted = @intCast(accepted), .phases = pending.phases };
+}
+
+/// Result of checking one root-to-leaf PCTree proposal with the target
+/// verifier. `accepted` counts only draft tokens, matching `DsparkRound`.
+const PctreeBranchAcceptance = struct {
+    accepted: usize,
+    next_token: u32,
+};
+
+/// Compute the DSpark greedy acceptance decision from target verifier rows.
+/// `branch` intentionally excludes the root/trunk token; verifier row zero
+/// predicts `branch[0]`, and the first rejected row predicts `next_token`.
+///
+/// This is pure host logic so it has deterministic mutation coverage without
+/// a model. It follows `dsparkRoundWithCapped`'s strict-greater first-max
+/// scan exactly; an empty/malformed branch is rejected rather than silently
+/// becoming a zero-draft round.
+fn pctreeBranchAcceptanceFromVerifierRows(
+    verifier_logits: []const f32,
+    vocab: usize,
+    branch: []const u32,
+) !PctreeBranchAcceptance {
+    if (vocab == 0 or branch.len == 0) {
+        return error.InvalidPctreeBranchVerifierRows;
+    }
+    const row_count = std.math.add(usize, branch.len, 1) catch return error.InvalidPctreeBranchVerifierRows;
+    const expected_logits = std.math.mul(usize, row_count, vocab) catch return error.InvalidPctreeBranchVerifierRows;
+    if (verifier_logits.len != expected_logits) return error.InvalidPctreeBranchVerifierRows;
+    for (branch) |token| {
+        if (token >= vocab) return error.InvalidPctreeBranchToken;
+    }
+
+    const argmax = struct {
+        fn f(row: []const f32) u32 {
+            var best: usize = 0;
+            for (row, 0..) |value, i| {
+                if (value > row[best]) best = i;
+            }
+            return @intCast(best);
+        }
+    }.f;
+
+    var accepted: usize = 0;
+    while (accepted < branch.len) {
+        const row = verifier_logits[accepted * vocab ..][0..vocab];
+        if (argmax(row) != branch[accepted]) break;
+        accepted += 1;
+    }
+    const correction_row = verifier_logits[accepted * vocab ..][0..vocab];
+    return .{ .accepted = accepted, .next_token = argmax(correction_row) };
+}
+
+/// Verify one retained PCTree root-to-leaf branch through DSpark's existing
+/// serial target verifier (`dsparkBeginWith` -> `dsparkFinish`). The caller
+/// supplies a state freshly prepared from the same prefix for every branch;
+/// this helper owns neither that state nor the branch. It fails closed unless
+/// the serial verifier is actually armed, so no tree result can accidentally
+/// come from the batched path under investigation.
+fn pctreeVerifyBranchSerial(
+    m: *Dsv4Model,
+    gpa: std.mem.Allocator,
+    st: *Dsv4DecodeState,
+    trunk_token: u32,
+    branch: []const u32,
+) !PctreeBranchAcceptance {
+    // This must precede both allocation and dsparkBeginWith: a rejected
+    // capability is a no-op, not a speculative-state mutation followed by an
+    // error.  The oracle is meaningful only on the reference serial verifier.
+    if (!dsparkSerialVerifyEnabled(m)) return error.PctreeSerialVerifierNotArmed;
+    if (branch.len == 0 or branch.len > m.ds_block or m.vocab == 0 or st.dspark == null) {
+        return error.InvalidPctreeBranch;
+    }
+    if (trunk_token >= m.vocab) return error.InvalidPctreeBranch;
+    for (branch) |token| {
+        if (token >= m.vocab) return error.InvalidPctreeBranch;
+    }
+    const ids_len = std.math.add(usize, branch.len, 1) catch return error.InvalidPctreeBranch;
+    const verify_values = std.math.mul(usize, ids_len, m.vocab) catch return error.InvalidPctreeBranch;
+    const ids = try gpa.alloc(u32, ids_len);
+    defer gpa.free(ids);
+    ids[0] = trunk_token;
+    @memcpy(ids[1..], branch);
+    const draft = DsparkDraft{
+        .ids = ids,
+        .len = branch.len,
+        .logits = &.{},
+        .confidence = &.{},
+    };
+
+    var pending = try dsparkBeginWith(m, gpa, st, trunk_token, &draft);
+    defer pending.deinit();
+    if (!pending.serial_verify) return error.PctreeSerialVerifierContractViolation;
+    const verifier_logits = try toHostF32(gpa, pending.vl_g, verify_values, m.s);
+    defer gpa.free(verifier_logits);
+    const result = try pctreeBranchAcceptanceFromVerifierRows(verifier_logits, m.vocab, branch);
+
+    var round = try dsparkFinish(m, gpa, st, &pending, result.accepted, result.next_token);
+    defer round.deinit(gpa);
+    if (round.accepted != result.accepted or round.next_token != result.next_token) {
+        return error.PctreeSerialVerifierContractViolation;
+    }
+    return result;
+}
+
+test "dsv4: PCTree branch acceptance scan rejects the first mutated token" {
+    // Pure host regression: the tree oracle must use the same first-reject
+    // boundary and correction row as the pinned DSpark accept loop. This test
+    // needs no MLX stream or model weights.
+    const vocab: usize = 4;
+    const branch = [_]u32{ 2, 1 };
+    const rows = [_]f32{
+        0, 0, 9, 0, // row 0 accepts candidate token 2
+        0, 8, 0, 0, // row 1 accepts candidate token 1
+        0, 0, 0, 7, // full-accept bonus/correction token 3
+    };
+    const accepted = try pctreeBranchAcceptanceFromVerifierRows(&rows, vocab, &branch);
+    try testing.expectEqual(@as(usize, 2), accepted.accepted);
+    try testing.expectEqual(@as(u32, 3), accepted.next_token);
+
+    // Mutation: only the second proposed token changes. The first stays
+    // accepted; row 1 is now the correction row, so next_token becomes 1.
+    const mutated_branch = [_]u32{ 2, 0 };
+    const rejected = try pctreeBranchAcceptanceFromVerifierRows(&rows, vocab, &mutated_branch);
+    try testing.expectEqual(@as(usize, 1), rejected.accepted);
+    try testing.expectEqual(@as(u32, 1), rejected.next_token);
+
+    // Fail closed: malformed verifier geometry, an out-of-vocab candidate,
+    // and an empty branch cannot silently become a valid tree result.
+    try testing.expectError(error.InvalidPctreeBranchVerifierRows, pctreeBranchAcceptanceFromVerifierRows(rows[0..8], vocab, &branch));
+    try testing.expectError(error.InvalidPctreeBranchToken, pctreeBranchAcceptanceFromVerifierRows(&rows, vocab, &[_]u32{ 4, 1 }));
+    try testing.expectError(error.InvalidPctreeBranchVerifierRows, pctreeBranchAcceptanceFromVerifierRows(&rows, vocab, &.{}));
+    try testing.expectError(error.InvalidPctreeBranchVerifierRows, pctreeBranchAcceptanceFromVerifierRows(&.{}, 0, &branch));
 }
 
 /// Feed a finished round's phases into the profile (armed via

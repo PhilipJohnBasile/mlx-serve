@@ -1,0 +1,49 @@
+{
+  "receipt": "dsv4-pctree-phase4-serial-branch-acceptance-result",
+  "date": "2026-08-10",
+  "worktree": "branch:dsv4-pctree-mlx-20260809",
+  "baseline": "68acdba6cb464268a5c2dc83188d9ce3d0a51b36",
+  "preregistration": "receipts/dsv4-pctree/phase-4-serial-branch-acceptance-preregistration-20260810.json",
+  "status": "PASS_NO_POSITIVE_K_GT_1_DELTA_ON_DSV4_MINI",
+  "scope": {
+    "fixture": "DSV4_MINI ReleaseFast miniature random-weight fixture",
+    "not_claimed": [
+      "real-model acceptance gain",
+      "real-model speedup",
+      "tree-verifier feasibility",
+      "production exactness",
+      "release readiness"
+    ]
+  },
+  "verification": {
+    "formatter_check": "passed",
+    "pctree_zig": { "passed": 11, "failed": 0 },
+    "pctree_batch_zig": { "passed": 14, "failed": 0 },
+    "dsv4_mini_releasefast_pctree_filter": { "passed": 4, "failed": 0 },
+    "dsv4_mini_releasesafe_dspark_filter": { "passed": 15, "failed": 0 }
+  },
+  "acceptance_measurement": {
+    "retained_full_depth_branches_per_prefix": 3,
+    "distinct_retained_full_depth_branches_per_prefix": 2,
+    "prefixes": [
+      { "i": 6, "k1_accepted": 0, "k1_next": 32, "tree_best_accepted": 0, "tree_best_next": 32, "delta": 0 },
+      { "i": 9, "k1_accepted": 0, "k1_next": 32, "tree_best_accepted": 0, "tree_best_next": 32, "delta": 0 },
+      { "i": 12, "k1_accepted": 0, "k1_next": 51, "tree_best_accepted": 0, "tree_best_next": 51, "delta": 0 }
+    ],
+    "interpretation": "The miniature fixture completed the predeclared serial-branch acceptance gate, but no prefix produced a positive k>1 accepted-length delta."
+  },
+  "defects_fixed_before_pass": [
+    {
+      "defect": "Zig orelse precedence",
+      "status": "fixed before the recorded pass"
+    },
+    {
+      "defect": "serial-verifier anchors were unnecessarily armed",
+      "status": "fixed before the recorded pass"
+    }
+  ],
+  "prototype_gate": {
+    "outcome": "NO_GO",
+    "decision": "Do not implement a tree-shaped verifier: the predeclared gate requires a reproducible positive k>1 acceptance delta, and this miniature measurement recorded delta=0 at all three prefixes."
+  }
+}

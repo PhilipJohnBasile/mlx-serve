@@ -1,0 +1,47 @@
+{
+  "receipt": "dsv4-pctree-phase4-serial-branch-acceptance-preregistration",
+  "date": "2026-08-10",
+  "worktree": "branch:dsv4-pctree-mlx-20260809",
+  "baseline": "68acdba6cb464268a5c2dc83188d9ce3d0a51b36",
+  "status": "DEFERRED_ACTIVE_MODEL_WORKLOAD",
+  "implementation": {
+    "oracle": "pctreeVerifyBranchSerial",
+    "target_verifier": "dsparkBeginWith serial verifier plus dsparkFinish rollback/commit",
+    "tree_shape": "all retained full-depth k=3 leaves; k=1 is independently verified from the same prefix",
+    "state_gate": "candidate next token, decode-state fingerprint, and live-state content hash equal an independent serial replay",
+    "fail_closed": [
+      "serial verifier must report armed",
+      "empty, malformed, and out-of-vocabulary branches are rejected",
+      "no serving path selects the test-only serial override"
+    ]
+  },
+  "commands": {
+    "pure_cpu": [
+      ".zig-toolchain/zig test src/pctree.zig",
+      ".zig-toolchain/zig test src/pctree_batch.zig",
+      ".zig-toolchain/zig build test -Dtest-filter='PCTree branch acceptance scan' -Doptimize=ReleaseSafe --summary all"
+    ],
+    "deferred_dsv4_mini": "DSV4_MINI=/tmp/dsv4-mini .zig-toolchain/zig build test -Dtest-filter='PCTree retained branches use the serial B1-B5 verifier' -Doptimize=ReleaseFast --summary all"
+  },
+  "results": {
+    "planner_unit": { "passed": 9, "failed": 0 },
+    "batched_reference": { "passed": 12, "failed": 0 },
+    "acceptance_scan": { "passed": 2, "failed": 0 },
+    "dsv4_mini_oracle": { "status": "NOT_RUN" }
+  },
+  "predeclared_interpretation": {
+    "k1_gate": "PCTree k=1 must equal the runtime draft ids and produce the same accepted length and correction token through separate serial-verifier executions.",
+    "branch_gate": "Every retained full-depth k=3 leaf must pass the target-state replay gate. The receipt records the best accepted length and its delta versus k=1 without treating a non-positive outcome as failure of the oracle.",
+    "prototype_gate": "Do not implement a tree-shaped verifier unless this measurement is correct and shows a reproducible positive k>1 acceptance delta."
+  },
+  "adverse_evidence": {
+    "active_workload": "An omlx-server process and an active DeepSeek corpus-generation Python process were observed before the attempted DSV4_MINI run; the latter was using substantial CPU and unified memory.",
+    "not_claimed": [
+      "k>1 beats k=1",
+      "tree verification feasibility",
+      "M5 speedup",
+      "production exactness",
+      "release readiness"
+    ]
+  }
+}

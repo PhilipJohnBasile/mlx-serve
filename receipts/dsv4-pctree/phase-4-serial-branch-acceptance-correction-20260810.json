@@ -1,0 +1,204 @@
+{
+  "receipt": "dsv4-pctree-phase4-serial-branch-acceptance-correction",
+  "date": "2026-08-10",
+  "status": "CORRECTED_ALGORITHM_NO_POSITIVE_DELTA_ON_DSV4_MINI",
+  "worktree": "branch:dsv4-pctree-mlx-20260809",
+  "baseline": "68acdba6cb464268a5c2dc83188d9ce3d0a51b36",
+  "primary_algorithm": {
+    "paper": "PCTree",
+    "url": "https://arxiv.org/html/2608.02123",
+    "sections": "4.1-4.2, Algorithm 1",
+    "implementation": "independent implementation; no author implementation was copied"
+  },
+  "historical_records": {
+    "preregistration": "receipts/dsv4-pctree/phase-4-serial-branch-acceptance-preregistration-20260810.json",
+    "beam_frontier_result": "receipts/dsv4-pctree/phase-4-serial-branch-acceptance-result-20260810.json",
+    "correction": "The preserved result used a 1+B*k beam-frontier planner. It was not Algorithm 1 and must not be interpreted as a PCTree-wide no-go. Before first publication, only machine-local worktree metadata in the historical JSON receipts was normalized to the branch-relative identifier; their result and evidence fields remain unchanged."
+  },
+  "corrected_contract": {
+    "candidate_pool": "all local top-k children from every frontier parent are retained in the pool",
+    "next_frontier": "current-layer top-k by joint path score, stable ID tie break",
+    "node_bound": "1 + k + (B - 1) * k^2",
+    "k1_selector": "raw f32 strict-greater first-max before log-softmax; includes one-ULP, NaN, and infinity regression tests",
+    "nonfinite_branching": "k>1 rejects non-finite raw logits rather than inventing a source-unspecified top-k order",
+    "leaf_policy": "every retained root-to-leaf path is evaluated, including short leaves"
+  },
+  "verification": {
+    "formatter": {
+      "command": "./.zig-toolchain/zig fmt --check src/pctree.zig src/pctree_batch.zig src/deepseek_v4.zig",
+      "result": "passed"
+    },
+    "planner": {
+      "command": "./.zig-toolchain/zig test src/pctree.zig",
+      "passed": 13,
+      "failed": 0,
+      "coverage_added": [
+        "one-ULP raw-logit regression",
+        "row-zero NaN and infinity behavior",
+        "checked dimension and node bounds",
+        "array-backed Markov scorer row bounds",
+        "all injected allocation failures leak-free"
+      ]
+    },
+    "batched_reference": {
+      "command": "./.zig-toolchain/zig test src/pctree_batch.zig",
+      "passed": 17,
+      "failed": 0
+    },
+    "dsv4_mini_pctree": {
+      "command": "DSV4_MINI=/tmp/dsv4-mini ./.zig-toolchain/zig build test -Dtest-filter=PCTree -Doptimize=ReleaseFast --summary all",
+      "passed": 5,
+      "failed": 0,
+      "count_scope": "filtered tests",
+      "total_suite": { "passed": 25, "failed": 0 },
+      "cache_protocol": "isolated per-run cache directory; machine-local path omitted",
+      "build_summary": { "steps_succeeded": 9, "steps_total": 9 },
+      "fixture_contract": "When DSV4_MINI is explicitly set, unreadable fixture files propagate an error and missing required PCTree fields return MissingPctreeFixtureField; a targeted negative unit test pins the missing-field behavior."
+    },
+    "dsv4_mini_dspark": {
+      "command": "DSV4_MINI=/tmp/dsv4-mini ./.zig-toolchain/zig build test -Dtest-filter=DSpark -Doptimize=ReleaseSafe --summary all",
+      "passed": 15,
+      "failed": 0,
+      "count_scope": "filtered tests",
+      "total_suite": { "passed": 35, "failed": 0 },
+      "cache_protocol": "isolated per-run cache directory; machine-local path omitted",
+      "build_summary": { "steps_succeeded": 9, "steps_total": 9 }
+    },
+    "missing_fixture_fail_closed_probe": {
+      "adverse_cached_observation": {
+        "result": "exit 0 after changing DSV4_MINI while reusing the normal Zig cache",
+        "interpretation": "NOT EVIDENCE: the fixture-backed tests were served from cache rather than re-executed"
+      },
+      "required_protocol": "Use an isolated cache directory, or another independently verified mechanism that forces execution, whenever DSV4_MINI changes.",
+      "fresh_command": "DSV4_MINI=\"$PROBE/fixture\" ./.zig-toolchain/zig build test -Dtest-filter=PCTree -Doptimize=ReleaseFast --cache-dir \"$PROBE/zig-cache\" --summary all",
+      "fresh_result": {
+        "exit_code": 1,
+        "passed": 23,
+        "failed": 2,
+        "failures": "both PCTree DSV4_MINI tests failed when the explicitly supplied fixture was missing/unreadable"
+      }
+    },
+    "known_build_warning": "Both isolated-cache positive reruns retained the missing lib/llama/lib and pkg-config --list-all warning while Build Summary reported 9/9 steps succeeded."
+  },
+  "corrected_mini_measurement": {
+    "fixture": "DSV4_MINI random-weight miniature fixture",
+    "tree": { "k": 3, "retention_budget": "1 + B*k" },
+    "prefixes": [
+      { "i": 6, "retained_leaves": 6, "full_depth_leaves": 0, "distinct_from_k1": 6, "k1_accepted": 0, "k1_next": 32, "tree_best_accepted": 0, "tree_best_next": 32, "delta": 0 },
+      { "i": 9, "retained_leaves": 7, "full_depth_leaves": 0, "distinct_from_k1": 7, "k1_accepted": 0, "k1_next": 32, "tree_best_accepted": 0, "tree_best_next": 32, "delta": 0 },
+      { "i": 12, "retained_leaves": 6, "full_depth_leaves": 0, "distinct_from_k1": 6, "k1_accepted": 0, "k1_next": 51, "tree_best_accepted": 0, "tree_best_next": 51, "delta": 0 }
+    ],
+    "lifecycle": {
+      "unarmed_serial_verifier": "fails before allocation or dsparkBeginWith and leaves the state fingerprint unchanged",
+      "positive_partial_accept": "a target-continuation proposal with only its final token mutated accepts B-1 tokens and matches independent serial replay",
+      "full_accept": "an unmodified target-continuation proposal accepts B tokens and matches independent serial replay"
+    },
+    "interpretation": "The corrected planner has no positive k>1 accepted-length result on this miniature fixture. This is not real-model quality, speed, packed-tree-verifier, or release evidence."
+  },
+  "provenance": {
+    "zig": {
+      "version": "0.17.0-dev.1422+e863bf3be",
+      "sha256": "2355fb1809ca9894359e1099ca906ce4b0accd4037d51197638da6d3ead03ded"
+    },
+    "dependencies": {
+      "mlx_src_commit": "7a1d4f5c12ac82f4b4d0a6e71538d89ca0605247",
+      "mlxc_src_commit": "fba4470b89073180056c9ea46c443051375f7399",
+      "ds4_commit": "efdadd41e20134af4f3381e1ed90e96fe4faef6f",
+      "libmlx_dylib_sha256": "d40feeeb17a4c23e9b64ebd4a06f5139993c4acc92dd7b907428bf96e1d2db36",
+      "libmlx_dylib_bytes": 22037056,
+      "source_worktrees_were_dirty_at_measurement": true,
+      "measurement_checkpoint": {
+        "identifier": "mlx-serve:receipts/dsv4/current-worktree-checkpoint-20260810.json",
+        "sha256": "f19392a085f6df04b018104e387722b78b2936dcdfb749ccb2e64cae015417e9",
+        "live_reinspection_matches_checkpoint": true,
+        "match_basis": "dependency HEADs, porcelain status, and SHA-256 of all 23 modified or untracked file contents"
+      },
+      "hash_protocol": {
+        "git_version": "2.54.0 (Apple Git-157)",
+        "tracked_patch_command": "LC_ALL=C git diff --binary --full-index --no-ext-diff HEAD --",
+        "status_command": "LC_ALL=C git status --porcelain=v1 -uall",
+        "digest": "SHA-256 of exact stdout bytes"
+      },
+      "mlx_source_state": {
+        "identifier": "dependency:mlx-src",
+        "base_commit": "7a1d4f5c12ac82f4b4d0a6e71538d89ca0605247",
+        "head_state": "detached",
+        "tracked_modification_count": 18,
+        "untracked_source_count": 3,
+        "tracked_patch_sha256": "504242cc10d18dda7130c04bff3d647934ce42fce3c380504b411996149547ab",
+        "tracked_patch_bytes": 25220,
+        "status_porcelain_v1_sha256": "78dd3a856d305f3926acc150e7e2312ca04ff268b629dd6d1fae7519f9a62a40",
+        "status_porcelain_v1_bytes": 787,
+        "tracked_paths": [
+          "mlx/backend/cpu/masked_mm.cpp",
+          "mlx/backend/cuda/CMakeLists.txt",
+          "mlx/backend/metal/CMakeLists.txt",
+          "mlx/backend/metal/jit/includes.h",
+          "mlx/backend/metal/jit_kernels.cpp",
+          "mlx/backend/metal/kernels.h",
+          "mlx/backend/metal/kernels/CMakeLists.txt",
+          "mlx/backend/metal/kernels/steel/gemm/params.h",
+          "mlx/backend/metal/matmul.cpp",
+          "mlx/backend/metal/matmul.h",
+          "mlx/backend/metal/no_metal.cpp",
+          "mlx/backend/metal/nojit_kernels.cpp",
+          "mlx/backend/no_cpu/primitives.cpp",
+          "mlx/backend/no_gpu/primitives.cpp",
+          "mlx/ops.cpp",
+          "mlx/ops.h",
+          "mlx/primitives.cpp",
+          "mlx/primitives.h"
+        ],
+        "untracked_sources": [
+          {
+            "path": "mlx/backend/cuda/dsv4_indexed_b_nax.cpp",
+            "bytes": 459,
+            "sha256": "2a77e8367c5e792505911acf3eb1d81141a175afad4a6821a1a2ff3bd5303e15"
+          },
+          {
+            "path": "mlx/backend/metal/kernels/steel/gemm/kernels/steel_gemm_dsv4_indexed_b_nax.h",
+            "bytes": 5173,
+            "sha256": "8e7dcabec40e0353e58eeb562a115f182a21d31a14298a4d5bb8f82d24c89e70"
+          },
+          {
+            "path": "mlx/backend/metal/kernels/steel/gemm/kernels/steel_gemm_dsv4_indexed_b_nax.metal",
+            "bytes": 482,
+            "sha256": "8341591a201856d5d76f2cd4e3637f413b20d26568ed4c2a627980e05d0b9fc1"
+          }
+        ]
+      },
+      "mlxc_source_state": {
+        "identifier": "dependency:mlxc-src",
+        "base_commit": "fba4470b89073180056c9ea46c443051375f7399",
+        "head_state": "detached",
+        "tracked_modification_count": 2,
+        "untracked_source_count": 0,
+        "tracked_patch_sha256": "25e8789facca8ec598163e1cc48277f763de04336f74122877c609594495931b",
+        "tracked_patch_bytes": 2689,
+        "status_porcelain_v1_sha256": "e716fd7a615961e0cbf6f87cfff38edebd7b0e4b429535060f80e651b6c487e7",
+        "status_porcelain_v1_bytes": 32,
+        "tracked_paths": [
+          "mlx/c/ops.cpp",
+          "mlx/c/ops.h"
+        ]
+      },
+      "reproducibility_limit": "The tested libmlx.dylib is pinned by its SHA-256 and byte size. MLX and MLX-C were tested from the disclosed dirty source states; reproduction of that binary from the clean base commits alone is not proven."
+    },
+    "fixture": {
+      "config_json_sha256": "925c82980b478b2e5c665399c299ef4b42c1f9148f42125dffa6db1d65f1995c",
+      "fixtures_json_sha256": "809524aa20ff4a0bafdce6256efe7a5266adc2f5425ef8fffff01cadc9401810",
+      "model_mini_safetensors_sha256": "d0c6ed033d569ed597f4b3564da271c61afe7fbb2e1d61ef82fa274410ba5532"
+    },
+    "sources": {
+      "pctree_zig_sha256": "b174f3d94ac6970c2f4cdfd5807edd8f852a110c7d4c3e89096a44072104cdb0",
+      "pctree_batch_zig_sha256": "fda3d8c36157d1df34524ef2e875b5cf7cc9249185cd9a1f480d57963ca855ff",
+      "deepseek_v4_zig_sha256": "5d136467f32a4a6c46dd4fa9482013bc2298544d4c3f74a0d2bd615ac16ce8d5",
+      "build_zig_sha256": "0c180876937e2f2344803814d5345a6fd5c69b85e8ca09c672c4c5373ab212ed",
+      "build_zig_zon_sha256": "49ac13fd2801f756645c1cadd4f9268305b8e257d393c500b13725e50486813c"
+    }
+  },
+  "promotion_gate": {
+    "outcome": "NO_GO",
+    "decision": "Do not build or publish a tree-shaped verifier from this evidence. Reconsider only with a separately preregistered real-model acceptance, lifecycle, quality, and speed evaluation."
+  }
+}
