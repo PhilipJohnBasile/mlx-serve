@@ -11,17 +11,31 @@ tags:
   - experimental
 ---
 
-# DeepSeek V4 Flash 0731 — MLX M5 Max Target-Only (Experimental)
+# DeepSeek V4 Flash 0731 — MLX M5 Max Target-Only (Superseded Reference)
+
+> **Status (2026-08-12): this MLX artifact is superseded on the M5 Max by
+> the DwarfStar (antirez/ds4) GGUF build of the same model.** On this
+> hardware we measured the DwarfStar build at roughly 2–3× faster decode
+> with strictly better fidelity (0.39 avg token-NLL vs official 0731
+> continuations, 86% top-1, 78% top-N recall, 98.7% ranking agreement,
+> via DwarfStar's own `score_official`). This MLX artifact is retained as
+> an **experimental, honest reference** for the MLX/`mlx-serve` path — its
+> measured limits are stated below, not hidden — and as provenance
+> evidence for the conversion work.
 
 This is an **experimental, target-only MLX derivative** of
 [`deepseek-ai/DeepSeek-V4-Flash-0731`](https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731),
 pinned to upstream revision
 `7872f01b1d1fe23eabc4c98b48bffcef5a386062`.
 
-It is intended for public testing on a 128 GB Apple Silicon Mac. It has passed
-real M5 Max 128 GB load-and-generation smokes, but it has **not** yet passed a
-fresh blind quality evaluation or a representative performance benchmark.
-Do not interpret this upload as a no-quality-loss or speed claim.
+It is intended for public testing on a 128 GB Apple Silicon Mac. A real
+M5 Max 128 GB load-and-generation smoke passed, and a deterministic 50-task
+comparison against the official model was run (results below). The 50-task
+result shows the artifact matches the original on copy/JSON/code/multilingual
+but regresses on arithmetic and multi-step reasoning, and it is slower than
+the DwarfStar GGUF build on the same hardware. **Do not interpret this
+upload as a no-quality-loss or no-speed-loss claim; prefer the DwarfStar
+build on this machine.**
 
 ## What is included
 
