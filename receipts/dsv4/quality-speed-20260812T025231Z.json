@@ -1,0 +1,167 @@
+{
+  "schema": "dsv4-quality-speed-v1",
+  "stamp": "20260812T025231Z",
+  "tasks": [
+    {
+      "name": "exact_copy_simple",
+      "max_tokens": 16
+    },
+    {
+      "name": "exact_copy_token",
+      "max_tokens": 16
+    },
+    {
+      "name": "json_arithmetic",
+      "max_tokens": 40
+    },
+    {
+      "name": "json_square",
+      "max_tokens": 30
+    },
+    {
+      "name": "math_mult",
+      "max_tokens": 20
+    },
+    {
+      "name": "math_mod",
+      "max_tokens": 20
+    },
+    {
+      "name": "math_sqrt",
+      "max_tokens": 20
+    },
+    {
+      "name": "code_return",
+      "max_tokens": 60
+    },
+    {
+      "name": "reasoning_triple",
+      "max_tokens": 96
+    },
+    {
+      "name": "multilingual_es",
+      "max_tokens": 60
+    }
+  ],
+  "arms": {
+    "remote": {
+      "exact_copy_simple": {
+        "content": "READY",
+        "sha256": "c2e3ac47f4a325469c1a2d5f117e463ec943c721986d5d9f09ac4540b7d80526",
+        "passed": true,
+        "detail": "exact ''READY'' vs ''READY''",
+        "latency_s": 0.413,
+        "prompt_tokens": 14,
+        "completion_tokens": 3,
+        "tok_s": 7.26
+      },
+      "exact_copy_token": {
+        "content": "Ax7_Q!m2",
+        "sha256": "1c4cd215805a72d56bd5cc20684afa5987bc360dba443d3b0ba9439270883ead",
+        "passed": true,
+        "detail": "exact ''Ax7_Q!m2'' vs ''Ax7_Q!m2''",
+        "latency_s": 0.364,
+        "prompt_tokens": 18,
+        "completion_tokens": 7,
+        "tok_s": 19.22
+      },
+      "json_arithmetic": {
+        "content": "{\"sum\": 42, \"prime\": false}",
+        "sha256": "4990f62e1e34253025cb64204492395e446d152616c4903f4e70d6ecfbe19e6f",
+        "passed": true,
+        "detail": "json {'sum': 42, 'prime': False} vs {'sum': 42, 'prime': False}",
+        "latency_s": 0.555,
+        "prompt_tokens": 36,
+        "completion_tokens": 12,
+        "tok_s": 21.62
+      },
+      "json_square": {
+        "content": "{\"square\": 169}",
+        "sha256": "800d0cfc953e7827ab7478144564b5a913e3de0735aeec866ab746f95373b342",
+        "passed": true,
+        "detail": "json {'square': 169} vs {'square': 169}",
+        "latency_s": 0.471,
+        "prompt_tokens": 22,
+        "completion_tokens": 7,
+        "tok_s": 14.87
+      },
+      "math_mult": {
+        "content": "391",
+        "sha256": "a934c244755c66aebb0d6f9f5687038ffae8f00b00b28b4e17521016393f38b9",
+        "passed": true,
+        "detail": "last-num 391.0 vs 391",
+        "latency_s": 0.612,
+        "prompt_tokens": 17,
+        "completion_tokens": 2,
+        "tok_s": 3.27
+      },
+      "math_mod": {
+        "content": "1000003 \u00f7 7 = 142857 remainder 4.  \nSo, 100000",
+        "sha256": "f03f006c548dd1e178e0d3e121719bfd7c86ae48441818b1bff12e737da9fa22",
+        "passed": false,
+        "detail": "last-num 100000.0 vs 4",
+        "latency_s": 0.791,
+        "prompt_tokens": 19,
+        "completion_tokens": 20,
+        "tok_s": 25.29
+      },
+      "math_sqrt": {
+        "content": "12",
+        "sha256": "6b51d431df5d7f141cbececcf79edf3dd861c3b4069f0b11661a3eefacbba918",
+        "passed": true,
+        "detail": "last-num 12.0 vs 12",
+        "latency_s": 0.483,
+        "prompt_tokens": 19,
+        "completion_tokens": 2,
+        "tok_s": 4.14
+      },
+      "code_return": {
+        "content": "def add(a, b): return a + b",
+        "sha256": "498c767f57c8776125776f9a1eeb1c247c2a57e22aa4a745e97c2810e8afabe5",
+        "passed": true,
+        "detail": "check return a+b",
+        "latency_s": 0.481,
+        "prompt_tokens": 28,
+        "completion_tokens": 11,
+        "tok_s": 22.85
+      },
+      "reasoning_triple": {
+        "content": "4",
+        "sha256": "4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a",
+        "passed": true,
+        "detail": "last-num 4.0 vs 4",
+        "latency_s": 0.97,
+        "prompt_tokens": 38,
+        "completion_tokens": 2,
+        "tok_s": 2.06
+      },
+      "multilingual_es": {
+        "content": "El hielo flota en el agua porque es menos denso que el agua l\u00edquida, ya que sus mol\u00e9culas se expanden al congelarse.",
+        "sha256": "7c184034ed6bfa220472e2e50133b34cb37a797bdd89a1aa391e38de2dc1611b",
+        "passed": true,
+        "detail": "len=116",
+        "latency_s": 1.425,
+        "prompt_tokens": 23,
+        "completion_tokens": 34,
+        "tok_s": 23.87
+      }
+    }
+  },
+  "summaries": {
+    "remote": {
+      "tasks": 10,
+      "graded": 10,
+      "passed": 9,
+      "pass_rate": 0.9,
+      "median_tok_s": 19.22,
+      "mean_tok_s": 14.44
+    }
+  },
+  "cross_arm_agreement_vs_remote": {},
+  "notes": [
+    "temp=0, top_p=1, non-stream, logprobs=5 on every arm",
+    "remote: OpenRouter deepseek/deepseek-v4-flash-0731 on pinned coreweave/fp8, fallbacks disabled (same reference as the published comparison)",
+    "remote tok_s is network-inclusive and NOT model speed; local tok_s is genuine engine throughput on this M5 Max",
+    "pass means the same programmatic grader passed on the original and the derivative"
+  ]
+}

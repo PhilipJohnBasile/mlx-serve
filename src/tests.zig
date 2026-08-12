@@ -26,6 +26,9 @@ test {
     _ = @import("mtp.zig");
     _ = @import("diffusion.zig");
     _ = @import("deepseek_v4.zig");
+    _ = @import("dsv4_prefix_checkpoint.zig");
+    _ = @import("dsv4_layer14_moments.zig");
+    _ = @import("dsv4_layer14_moment_main.zig");
     _ = @import("router_trace.zig");
     _ = @import("kokoro.zig");
     _ = @import("kokoro_g2p.zig");

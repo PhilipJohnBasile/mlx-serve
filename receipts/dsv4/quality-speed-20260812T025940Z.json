@@ -1,0 +1,2077 @@
+{
+  "schema": "dsv4-quality-speed-v1",
+  "stamp": "20260812T025940Z",
+  "tasks": [
+    {
+      "name": "exact_ready",
+      "max_tokens": 16
+    },
+    {
+      "name": "exact_copy_1",
+      "max_tokens": 16
+    },
+    {
+      "name": "exact_hello",
+      "max_tokens": 16
+    },
+    {
+      "name": "exact_pi",
+      "max_tokens": 16
+    },
+    {
+      "name": "exact_print",
+      "max_tokens": 16
+    },
+    {
+      "name": "exact_list",
+      "max_tokens": 16
+    },
+    {
+      "name": "exact_true",
+      "max_tokens": 16
+    },
+    {
+      "name": "exact_dsv4",
+      "max_tokens": 16
+    },
+    {
+      "name": "json_sum",
+      "max_tokens": 40
+    },
+    {
+      "name": "json_square",
+      "max_tokens": 40
+    },
+    {
+      "name": "json_product",
+      "max_tokens": 40
+    },
+    {
+      "name": "json_prime",
+      "max_tokens": 40
+    },
+    {
+      "name": "json_round",
+      "max_tokens": 40
+    },
+    {
+      "name": "json_count",
+      "max_tokens": 40
+    },
+    {
+      "name": "json_fact",
+      "max_tokens": 40
+    },
+    {
+      "name": "json_reverse",
+      "max_tokens": 40
+    },
+    {
+      "name": "math_mult",
+      "max_tokens": 40
+    },
+    {
+      "name": "math_mod",
+      "max_tokens": 40
+    },
+    {
+      "name": "math_sqrt",
+      "max_tokens": 40
+    },
+    {
+      "name": "math_pow",
+      "max_tokens": 40
+    },
+    {
+      "name": "math_sub",
+      "max_tokens": 40
+    },
+    {
+      "name": "math_precedence",
+      "max_tokens": 40
+    },
+    {
+      "name": "math_gcd",
+      "max_tokens": 40
+    },
+    {
+      "name": "math_lcm",
+      "max_tokens": 40
+    },
+    {
+      "name": "math_pct",
+      "max_tokens": 40
+    },
+    {
+      "name": "math_square25",
+      "max_tokens": 40
+    },
+    {
+      "name": "math_rem",
+      "max_tokens": 40
+    },
+    {
+      "name": "math_sum1to10",
+      "max_tokens": 40
+    },
+    {
+      "name": "reason_tom",
+      "max_tokens": 96
+    },
+    {
+      "name": "reason_train",
+      "max_tokens": 96
+    },
+    {
+      "name": "reason_age",
+      "max_tokens": 96
+    },
+    {
+      "name": "reason_half",
+      "max_tokens": 96
+    },
+    {
+      "name": "reason_consec",
+      "max_tokens": 96
+    },
+    {
+      "name": "reason_minutes",
+      "max_tokens": 96
+    },
+    {
+      "name": "reason_pct",
+      "max_tokens": 96
+    },
+    {
+      "name": "reason_square",
+      "max_tokens": 96
+    },
+    {
+      "name": "reason_pages",
+      "max_tokens": 96
+    },
+    {
+      "name": "reason_div",
+      "max_tokens": 96
+    },
+    {
+      "name": "code_add",
+      "max_tokens": 60
+    },
+    {
+      "name": "code_fib",
+      "max_tokens": 80
+    },
+    {
+      "name": "code_even",
+      "max_tokens": 60
+    },
+    {
+      "name": "code_cap",
+      "max_tokens": 60
+    },
+    {
+      "name": "code_reverse",
+      "max_tokens": 40
+    },
+    {
+      "name": "code_max3",
+      "max_tokens": 80
+    },
+    {
+      "name": "multi_es",
+      "max_tokens": 60
+    },
+    {
+      "name": "multi_fr",
+      "max_tokens": 60
+    },
+    {
+      "name": "multi_de",
+      "max_tokens": 40
+    },
+    {
+      "name": "choice_largest",
+      "max_tokens": 20
+    },
+    {
+      "name": "choice_first",
+      "max_tokens": 20
+    },
+    {
+      "name": "choice_vowels",
+      "max_tokens": 20
+    }
+  ],
+  "arms": {
+    "remote": {
+      "exact_ready": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "READY",
+            "sha256": "c2e3ac47f4a325469c1a2d5f117e463ec943c721986d5d9f09ac4540b7d80526",
+            "passed": true,
+            "detail": "exact ''READY'' vs ''READY''",
+            "latency_s": 0.474,
+            "prompt_tokens": 14,
+            "completion_tokens": 3,
+            "tok_s": 6.33
+          },
+          {
+            "content": "READY",
+            "sha256": "c2e3ac47f4a325469c1a2d5f117e463ec943c721986d5d9f09ac4540b7d80526",
+            "passed": true,
+            "detail": "exact ''READY'' vs ''READY''",
+            "latency_s": 0.573,
+            "prompt_tokens": 14,
+            "completion_tokens": 3,
+            "tok_s": 5.23
+          },
+          {
+            "content": "READY",
+            "sha256": "c2e3ac47f4a325469c1a2d5f117e463ec943c721986d5d9f09ac4540b7d80526",
+            "passed": true,
+            "detail": "exact ''READY'' vs ''READY''",
+            "latency_s": 0.533,
+            "prompt_tokens": 14,
+            "completion_tokens": 3,
+            "tok_s": 5.63
+          }
+        ]
+      },
+      "exact_copy_1": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "Ax7_Q!m2",
+            "sha256": "1c4cd215805a72d56bd5cc20684afa5987bc360dba443d3b0ba9439270883ead",
+            "passed": true,
+            "detail": "exact ''Ax7_Q!m2'' vs ''Ax7_Q!m2''",
+            "latency_s": 0.532,
+            "prompt_tokens": 18,
+            "completion_tokens": 7,
+            "tok_s": 13.16
+          },
+          {
+            "content": "Ax7_Q!m2",
+            "sha256": "1c4cd215805a72d56bd5cc20684afa5987bc360dba443d3b0ba9439270883ead",
+            "passed": true,
+            "detail": "exact ''Ax7_Q!m2'' vs ''Ax7_Q!m2''",
+            "latency_s": 0.946,
+            "prompt_tokens": 18,
+            "completion_tokens": 7,
+            "tok_s": 7.4
+          },
+          {
+            "content": "Ax7_Q!m2",
+            "sha256": "1c4cd215805a72d56bd5cc20684afa5987bc360dba443d3b0ba9439270883ead",
+            "passed": true,
+            "detail": "exact ''Ax7_Q!m2'' vs ''Ax7_Q!m2''",
+            "latency_s": 0.404,
+            "prompt_tokens": 18,
+            "completion_tokens": 7,
+            "tok_s": 17.35
+          }
+        ]
+      },
+      "exact_hello": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "Hello, World!",
+            "sha256": "dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+            "passed": true,
+            "detail": "exact ''Hello, World!'' vs ''Hello, World!''",
+            "latency_s": 0.391,
+            "prompt_tokens": 13,
+            "completion_tokens": 5,
+            "tok_s": 12.79
+          },
+          {
+            "content": "Hello, World!",
+            "sha256": "dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+            "passed": true,
+            "detail": "exact ''Hello, World!'' vs ''Hello, World!''",
+            "latency_s": 0.363,
+            "prompt_tokens": 13,
+            "completion_tokens": 5,
+            "tok_s": 13.77
+          },
+          {
+            "content": "Hello, World!",
+            "sha256": "dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+            "passed": true,
+            "detail": "exact ''Hello, World!'' vs ''Hello, World!''",
+            "latency_s": 0.355,
+            "prompt_tokens": 13,
+            "completion_tokens": 5,
+            "tok_s": 14.08
+          }
+        ]
+      },
+      "exact_pi": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "3.14159",
+            "sha256": "c0740dd25c9de39b9c8d5ab452e8b69bcc0bf86f2a60ed7e527e79d0a3035852",
+            "passed": true,
+            "detail": "exact ''3.14159'' vs ''3.14159''",
+            "latency_s": 0.407,
+            "prompt_tokens": 14,
+            "completion_tokens": 5,
+            "tok_s": 12.3
+          },
+          {
+            "content": "3.14159",
+            "sha256": "c0740dd25c9de39b9c8d5ab452e8b69bcc0bf86f2a60ed7e527e79d0a3035852",
+            "passed": true,
+            "detail": "exact ''3.14159'' vs ''3.14159''",
+            "latency_s": 0.347,
+            "prompt_tokens": 14,
+            "completion_tokens": 5,
+            "tok_s": 14.4
+          },
+          {
+            "content": "3.14159",
+            "sha256": "c0740dd25c9de39b9c8d5ab452e8b69bcc0bf86f2a60ed7e527e79d0a3035852",
+            "passed": true,
+            "detail": "exact ''3.14159'' vs ''3.14159''",
+            "latency_s": 0.358,
+            "prompt_tokens": 14,
+            "completion_tokens": 5,
+            "tok_s": 13.95
+          }
+        ]
+      },
+      "exact_print": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "print('hi')",
+            "sha256": "c2d0a5e0790d97a015387a995c0d0b5eb3e88138466586fc980787c9b1731eb8",
+            "passed": true,
+            "detail": "exact '\"print('hi')\"' vs '\"print('hi')\"'",
+            "latency_s": 0.424,
+            "prompt_tokens": 13,
+            "completion_tokens": 5,
+            "tok_s": 11.78
+          },
+          {
+            "content": "print('hi')",
+            "sha256": "c2d0a5e0790d97a015387a995c0d0b5eb3e88138466586fc980787c9b1731eb8",
+            "passed": true,
+            "detail": "exact '\"print('hi')\"' vs '\"print('hi')\"'",
+            "latency_s": 0.51,
+            "prompt_tokens": 13,
+            "completion_tokens": 5,
+            "tok_s": 9.81
+          },
+          {
+            "content": "print('hi')",
+            "sha256": "c2d0a5e0790d97a015387a995c0d0b5eb3e88138466586fc980787c9b1731eb8",
+            "passed": true,
+            "detail": "exact '\"print('hi')\"' vs '\"print('hi')\"'",
+            "latency_s": 0.36,
+            "prompt_tokens": 13,
+            "completion_tokens": 5,
+            "tok_s": 13.88
+          }
+        ]
+      },
+      "exact_list": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "[1,2,3]",
+            "sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+            "passed": true,
+            "detail": "exact ''[1,2,3]'' vs ''[1,2,3]''",
+            "latency_s": 0.355,
+            "prompt_tokens": 16,
+            "completion_tokens": 8,
+            "tok_s": 22.51
+          },
+          {
+            "content": "[1,2,3]",
+            "sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+            "passed": true,
+            "detail": "exact ''[1,2,3]'' vs ''[1,2,3]''",
+            "latency_s": 0.409,
+            "prompt_tokens": 16,
+            "completion_tokens": 8,
+            "tok_s": 19.57
+          },
+          {
+            "content": "[1,2,3]",
+            "sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+            "passed": true,
+            "detail": "exact ''[1,2,3]'' vs ''[1,2,3]''",
+            "latency_s": 0.368,
+            "prompt_tokens": 16,
+            "completion_tokens": 8,
+            "tok_s": 21.73
+          }
+        ]
+      },
+      "exact_true": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "True",
+            "sha256": "3cbc87c7681f34db4617feaa2c8801931bc5e42d8d0f560e756dd4cd92885f18",
+            "passed": true,
+            "detail": "exact ''True'' vs ''True''",
+            "latency_s": 0.35,
+            "prompt_tokens": 10,
+            "completion_tokens": 2,
+            "tok_s": 5.72
+          },
+          {
+            "content": "True",
+            "sha256": "3cbc87c7681f34db4617feaa2c8801931bc5e42d8d0f560e756dd4cd92885f18",
+            "passed": true,
+            "detail": "exact ''True'' vs ''True''",
+            "latency_s": 0.312,
+            "prompt_tokens": 10,
+            "completion_tokens": 2,
+            "tok_s": 6.41
+          },
+          {
+            "content": "True",
+            "sha256": "3cbc87c7681f34db4617feaa2c8801931bc5e42d8d0f560e756dd4cd92885f18",
+            "passed": true,
+            "detail": "exact ''True'' vs ''True''",
+            "latency_s": 0.402,
+            "prompt_tokens": 10,
+            "completion_tokens": 2,
+            "tok_s": 4.98
+          }
+        ]
+      },
+      "exact_dsv4": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "dsv4",
+            "sha256": "252a8467e32eae29efb6b881a97bd69f19175591e0d8b093d96af121099c75e3",
+            "passed": true,
+            "detail": "exact ''dsv4'' vs ''dsv4''",
+            "latency_s": 0.398,
+            "prompt_tokens": 12,
+            "completion_tokens": 4,
+            "tok_s": 10.05
+          },
+          {
+            "content": "dsv4",
+            "sha256": "252a8467e32eae29efb6b881a97bd69f19175591e0d8b093d96af121099c75e3",
+            "passed": true,
+            "detail": "exact ''dsv4'' vs ''dsv4''",
+            "latency_s": 0.423,
+            "prompt_tokens": 12,
+            "completion_tokens": 4,
+            "tok_s": 9.46
+          },
+          {
+            "content": "dsv4",
+            "sha256": "252a8467e32eae29efb6b881a97bd69f19175591e0d8b093d96af121099c75e3",
+            "passed": true,
+            "detail": "exact ''dsv4'' vs ''dsv4''",
+            "latency_s": 0.333,
+            "prompt_tokens": 12,
+            "completion_tokens": 4,
+            "tok_s": 12.0
+          }
+        ]
+      },
+      "json_sum": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "{\"sum\": 42}",
+            "sha256": "5a5bc9d525e8e72fbcc1daa73624200bb01df4e62526de2642085d743605ae67",
+            "passed": true,
+            "detail": "json {'sum': 42} vs {'sum': 42}",
+            "latency_s": 0.397,
+            "prompt_tokens": 16,
+            "completion_tokens": 7,
+            "tok_s": 17.64
+          },
+          {
+            "content": "{\"sum\": 42}",
+            "sha256": "5a5bc9d525e8e72fbcc1daa73624200bb01df4e62526de2642085d743605ae67",
+            "passed": true,
+            "detail": "json {'sum': 42} vs {'sum': 42}",
+            "latency_s": 0.44,
+            "prompt_tokens": 16,
+            "completion_tokens": 7,
+            "tok_s": 15.9
+          },
+          {
+            "content": "{\"sum\": 42}",
+            "sha256": "5a5bc9d525e8e72fbcc1daa73624200bb01df4e62526de2642085d743605ae67",
+            "passed": true,
+            "detail": "json {'sum': 42} vs {'sum': 42}",
+            "latency_s": 0.584,
+            "prompt_tokens": 16,
+            "completion_tokens": 7,
+            "tok_s": 11.98
+          }
+        ]
+      },
+      "json_square": {
+        "passes": 2,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "{\"square\": 169}",
+            "sha256": "800d0cfc953e7827ab7478144564b5a913e3de0735aeec866ab746f95373b342",
+            "passed": true,
+            "detail": "json {'square': 169} vs {'square': 169}",
+            "latency_s": 0.413,
+            "prompt_tokens": 16,
+            "completion_tokens": 7,
+            "tok_s": 16.94
+          },
+          {
+            "content": "{\"square\": 169}",
+            "sha256": "800d0cfc953e7827ab7478144564b5a913e3de0735aeec866ab746f95373b342",
+            "passed": true,
+            "detail": "json {'square': 169} vs {'square': 169}",
+            "latency_s": 0.351,
+            "prompt_tokens": 16,
+            "completion_tokens": 7,
+            "tok_s": 19.95
+          },
+          {
+            "content": "{\"square\": 13*13}",
+            "sha256": "6183acab01479aa6d8d29a233d628123a48b2278b417f46cfffe04a15ce27fb5",
+            "passed": false,
+            "detail": "unparseable: Expecting ',' delimiter: line 1 column 14 (char 13)",
+            "latency_s": 0.472,
+            "prompt_tokens": 16,
+            "completion_tokens": 9,
+            "tok_s": 19.05
+          }
+        ]
+      },
+      "json_product": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "{\"product\": 391}",
+            "sha256": "e66b3148df7b70ed658bea75505a3d0240ac5b2701afaff4396a6379bff1d578",
+            "passed": true,
+            "detail": "json {'product': 391} vs {'product': 391}",
+            "latency_s": 0.386,
+            "prompt_tokens": 16,
+            "completion_tokens": 7,
+            "tok_s": 18.14
+          },
+          {
+            "content": "{\"product\": 391}",
+            "sha256": "e66b3148df7b70ed658bea75505a3d0240ac5b2701afaff4396a6379bff1d578",
+            "passed": true,
+            "detail": "json {'product': 391} vs {'product': 391}",
+            "latency_s": 0.412,
+            "prompt_tokens": 16,
+            "completion_tokens": 7,
+            "tok_s": 16.98
+          },
+          {
+            "content": "{\"product\": 391}",
+            "sha256": "e66b3148df7b70ed658bea75505a3d0240ac5b2701afaff4396a6379bff1d578",
+            "passed": true,
+            "detail": "json {'product': 391} vs {'product': 391}",
+            "latency_s": 0.408,
+            "prompt_tokens": 16,
+            "completion_tokens": 7,
+            "tok_s": 17.15
+          }
+        ]
+      },
+      "json_prime": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "{\"is_prime\": false}",
+            "sha256": "fbf44e1e6ba02c1d7a2a099f23db65b5321fe8f338d8d336931be633e7b6fc65",
+            "passed": true,
+            "detail": "json {'is_prime': False} vs {'is_prime': False}",
+            "latency_s": 0.409,
+            "prompt_tokens": 26,
+            "completion_tokens": 7,
+            "tok_s": 17.11
+          },
+          {
+            "content": "{\"is_prime\": false}",
+            "sha256": "fbf44e1e6ba02c1d7a2a099f23db65b5321fe8f338d8d336931be633e7b6fc65",
+            "passed": true,
+            "detail": "json {'is_prime': False} vs {'is_prime': False}",
+            "latency_s": 0.325,
+            "prompt_tokens": 26,
+            "completion_tokens": 7,
+            "tok_s": 21.55
+          },
+          {
+            "content": "{\"is_prime\": false}",
+            "sha256": "fbf44e1e6ba02c1d7a2a099f23db65b5321fe8f338d8d336931be633e7b6fc65",
+            "passed": true,
+            "detail": "json {'is_prime': False} vs {'is_prime': False}",
+            "latency_s": 0.391,
+            "prompt_tokens": 26,
+            "completion_tokens": 7,
+            "tok_s": 17.91
+          }
+        ]
+      },
+      "json_round": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "{\"rounded\": 4}",
+            "sha256": "e1cab3c501e131e401ea17d527186341102c2cf7d8249f0c523b1f171670a45a",
+            "passed": true,
+            "detail": "json {'rounded': 4} vs {'rounded': 4}",
+            "latency_s": 0.468,
+            "prompt_tokens": 18,
+            "completion_tokens": 7,
+            "tok_s": 14.96
+          },
+          {
+            "content": "{\"rounded\": 4}",
+            "sha256": "e1cab3c501e131e401ea17d527186341102c2cf7d8249f0c523b1f171670a45a",
+            "passed": true,
+            "detail": "json {'rounded': 4} vs {'rounded': 4}",
+            "latency_s": 0.421,
+            "prompt_tokens": 18,
+            "completion_tokens": 7,
+            "tok_s": 16.62
+          },
+          {
+            "content": "{\"rounded\": 4}",
+            "sha256": "e1cab3c501e131e401ea17d527186341102c2cf7d8249f0c523b1f171670a45a",
+            "passed": true,
+            "detail": "json {'rounded': 4} vs {'rounded': 4}",
+            "latency_s": 0.416,
+            "prompt_tokens": 18,
+            "completion_tokens": 7,
+            "tok_s": 16.84
+          }
+        ]
+      },
+      "json_count": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "{\"count\": 5}",
+            "sha256": "e0eb7e7d7e4482e888962c80be82cab90113c57979a097fb76ede8ef94869c55",
+            "passed": true,
+            "detail": "json {'count': 5} vs {'count': 5}",
+            "latency_s": 0.846,
+            "prompt_tokens": 16,
+            "completion_tokens": 7,
+            "tok_s": 8.28
+          },
+          {
+            "content": "{\"count\": 5}",
+            "sha256": "e0eb7e7d7e4482e888962c80be82cab90113c57979a097fb76ede8ef94869c55",
+            "passed": true,
+            "detail": "json {'count': 5} vs {'count': 5}",
+            "latency_s": 0.406,
+            "prompt_tokens": 16,
+            "completion_tokens": 7,
+            "tok_s": 17.23
+          },
+          {
+            "content": "{\"count\": 5}",
+            "sha256": "e0eb7e7d7e4482e888962c80be82cab90113c57979a097fb76ede8ef94869c55",
+            "passed": true,
+            "detail": "json {'count': 5} vs {'count': 5}",
+            "latency_s": 0.441,
+            "prompt_tokens": 16,
+            "completion_tokens": 7,
+            "tok_s": 15.86
+          }
+        ]
+      },
+      "json_fact": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "{\"factorial\": 40320}",
+            "sha256": "cf59aadf79c5abc4b779495f01e0121d654b0f46a8d7f0b3dd6387ab26fe2e0e",
+            "passed": true,
+            "detail": "json {'factorial': 40320} vs {'factorial': 40320}",
+            "latency_s": 0.89,
+            "prompt_tokens": 22,
+            "completion_tokens": 9,
+            "tok_s": 10.11
+          },
+          {
+            "content": "{\"factorial\": 40320}",
+            "sha256": "cf59aadf79c5abc4b779495f01e0121d654b0f46a8d7f0b3dd6387ab26fe2e0e",
+            "passed": true,
+            "detail": "json {'factorial': 40320} vs {'factorial': 40320}",
+            "latency_s": 0.389,
+            "prompt_tokens": 22,
+            "completion_tokens": 9,
+            "tok_s": 23.12
+          },
+          {
+            "content": "{\"factorial\": 40320}",
+            "sha256": "cf59aadf79c5abc4b779495f01e0121d654b0f46a8d7f0b3dd6387ab26fe2e0e",
+            "passed": true,
+            "detail": "json {'factorial': 40320} vs {'factorial': 40320}",
+            "latency_s": 0.381,
+            "prompt_tokens": 22,
+            "completion_tokens": 9,
+            "tok_s": 23.6
+          }
+        ]
+      },
+      "json_reverse": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "{\"reversed\": \"cba\"}",
+            "sha256": "70e36475cf4fa18163a47447c59ac94952e31fce674dcfac08f100ea61b07433",
+            "passed": true,
+            "detail": "json {'reversed': 'cba'} vs {'reversed': 'cba'}",
+            "latency_s": 0.424,
+            "prompt_tokens": 19,
+            "completion_tokens": 9,
+            "tok_s": 21.2
+          },
+          {
+            "content": "{\"reversed\": \"cba\"}",
+            "sha256": "70e36475cf4fa18163a47447c59ac94952e31fce674dcfac08f100ea61b07433",
+            "passed": true,
+            "detail": "json {'reversed': 'cba'} vs {'reversed': 'cba'}",
+            "latency_s": 0.385,
+            "prompt_tokens": 19,
+            "completion_tokens": 9,
+            "tok_s": 23.38
+          },
+          {
+            "content": "{\"reversed\": \"cba\"}",
+            "sha256": "70e36475cf4fa18163a47447c59ac94952e31fce674dcfac08f100ea61b07433",
+            "passed": true,
+            "detail": "json {'reversed': 'cba'} vs {'reversed': 'cba'}",
+            "latency_s": 1.872,
+            "prompt_tokens": 19,
+            "completion_tokens": 9,
+            "tok_s": 4.81
+          }
+        ]
+      },
+      "math_mult": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "391",
+            "sha256": "a934c244755c66aebb0d6f9f5687038ffae8f00b00b28b4e17521016393f38b9",
+            "passed": true,
+            "detail": "last-num 391.0 vs 391",
+            "latency_s": 0.438,
+            "prompt_tokens": 17,
+            "completion_tokens": 2,
+            "tok_s": 4.57
+          },
+          {
+            "content": "391",
+            "sha256": "a934c244755c66aebb0d6f9f5687038ffae8f00b00b28b4e17521016393f38b9",
+            "passed": true,
+            "detail": "last-num 391.0 vs 391",
+            "latency_s": 0.403,
+            "prompt_tokens": 17,
+            "completion_tokens": 2,
+            "tok_s": 4.97
+          },
+          {
+            "content": "391",
+            "sha256": "a934c244755c66aebb0d6f9f5687038ffae8f00b00b28b4e17521016393f38b9",
+            "passed": true,
+            "detail": "last-num 391.0 vs 391",
+            "latency_s": 0.416,
+            "prompt_tokens": 17,
+            "completion_tokens": 2,
+            "tok_s": 4.81
+          }
+        ]
+      },
+      "math_mod": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "1000003 \u00f7 7 = 142857 remainder 4.  \nSo, 1000003 mod 7 = 4.  \n\n4",
+            "sha256": "440d3b3d5392fc4649701a4c897fe82b7102920c23d50997eceb9bf98ee33cf4",
+            "passed": true,
+            "detail": "last-num 4.0 vs 4",
+            "latency_s": 5.554,
+            "prompt_tokens": 19,
+            "completion_tokens": 31,
+            "tok_s": 5.58
+          },
+          {
+            "content": "1000003 \u00f7 7 = 142857 remainder 4.  \nSo, 1000003 mod 7 = 4.  \n\nAnswer: 4",
+            "sha256": "c357af584ab1253735f18f3915e1e61ecf5fa792ba259d04d95f9cd0b26088be",
+            "passed": true,
+            "detail": "last-num 4.0 vs 4",
+            "latency_s": 0.592,
+            "prompt_tokens": 19,
+            "completion_tokens": 34,
+            "tok_s": 57.48
+          },
+          {
+            "content": "1000003 \u00f7 7 = 142857 remainder 4.  \nSo, 1000003 mod 7 = 4.  \n\nAnswer: 4",
+            "sha256": "c357af584ab1253735f18f3915e1e61ecf5fa792ba259d04d95f9cd0b26088be",
+            "passed": true,
+            "detail": "last-num 4.0 vs 4",
+            "latency_s": 2.713,
+            "prompt_tokens": 19,
+            "completion_tokens": 34,
+            "tok_s": 12.53
+          }
+        ]
+      },
+      "math_sqrt": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "12",
+            "sha256": "6b51d431df5d7f141cbececcf79edf3dd861c3b4069f0b11661a3eefacbba918",
+            "passed": true,
+            "detail": "last-num 12.0 vs 12",
+            "latency_s": 0.374,
+            "prompt_tokens": 19,
+            "completion_tokens": 2,
+            "tok_s": 5.34
+          },
+          {
+            "content": "12",
+            "sha256": "6b51d431df5d7f141cbececcf79edf3dd861c3b4069f0b11661a3eefacbba918",
+            "passed": true,
+            "detail": "last-num 12.0 vs 12",
+            "latency_s": 0.317,
+            "prompt_tokens": 19,
+            "completion_tokens": 2,
+            "tok_s": 6.3
+          },
+          {
+            "content": "12",
+            "sha256": "6b51d431df5d7f141cbececcf79edf3dd861c3b4069f0b11661a3eefacbba918",
+            "passed": true,
+            "detail": "last-num 12.0 vs 12",
+            "latency_s": 0.373,
+            "prompt_tokens": 19,
+            "completion_tokens": 2,
+            "tok_s": 5.36
+          }
+        ]
+      },
+      "math_pow": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "1024",
+            "sha256": "e39eef82f61b21e2e7f762fcc4307358f165757f2e77ec855d6992f7e0191932",
+            "passed": true,
+            "detail": "last-num 1024.0 vs 1024",
+            "latency_s": 0.312,
+            "prompt_tokens": 19,
+            "completion_tokens": 3,
+            "tok_s": 9.63
+          },
+          {
+            "content": "1024",
+            "sha256": "e39eef82f61b21e2e7f762fcc4307358f165757f2e77ec855d6992f7e0191932",
+            "passed": true,
+            "detail": "last-num 1024.0 vs 1024",
+            "latency_s": 0.413,
+            "prompt_tokens": 19,
+            "completion_tokens": 3,
+            "tok_s": 7.27
+          },
+          {
+            "content": "1024",
+            "sha256": "e39eef82f61b21e2e7f762fcc4307358f165757f2e77ec855d6992f7e0191932",
+            "passed": true,
+            "detail": "last-num 1024.0 vs 1024",
+            "latency_s": 0.353,
+            "prompt_tokens": 19,
+            "completion_tokens": 3,
+            "tok_s": 8.49
+          }
+        ]
+      },
+      "math_sub": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "56",
+            "sha256": "7688b6ef52555962d008fff894223582c484517cea7da49ee67800adc7fc8866",
+            "passed": true,
+            "detail": "last-num 56.0 vs 56",
+            "latency_s": 0.298,
+            "prompt_tokens": 17,
+            "completion_tokens": 2,
+            "tok_s": 6.71
+          },
+          {
+            "content": "56",
+            "sha256": "7688b6ef52555962d008fff894223582c484517cea7da49ee67800adc7fc8866",
+            "passed": true,
+            "detail": "last-num 56.0 vs 56",
+            "latency_s": 0.52,
+            "prompt_tokens": 17,
+            "completion_tokens": 2,
+            "tok_s": 3.84
+          },
+          {
+            "content": "56",
+            "sha256": "7688b6ef52555962d008fff894223582c484517cea7da49ee67800adc7fc8866",
+            "passed": true,
+            "detail": "last-num 56.0 vs 56",
+            "latency_s": 0.387,
+            "prompt_tokens": 17,
+            "completion_tokens": 2,
+            "tok_s": 5.17
+          }
+        ]
+      },
+      "math_precedence": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "31",
+            "sha256": "eb1e33e8a81b697b75855af6bfcdbcbf7cbbde9f94962ceaec1ed8af21f5a50f",
+            "passed": true,
+            "detail": "last-num 31.0 vs 31",
+            "latency_s": 0.326,
+            "prompt_tokens": 20,
+            "completion_tokens": 2,
+            "tok_s": 6.14
+          },
+          {
+            "content": "31",
+            "sha256": "eb1e33e8a81b697b75855af6bfcdbcbf7cbbde9f94962ceaec1ed8af21f5a50f",
+            "passed": true,
+            "detail": "last-num 31.0 vs 31",
+            "latency_s": 0.362,
+            "prompt_tokens": 20,
+            "completion_tokens": 2,
+            "tok_s": 5.52
+          },
+          {
+            "content": "31",
+            "sha256": "eb1e33e8a81b697b75855af6bfcdbcbf7cbbde9f94962ceaec1ed8af21f5a50f",
+            "passed": true,
+            "detail": "last-num 31.0 vs 31",
+            "latency_s": 0.45,
+            "prompt_tokens": 20,
+            "completion_tokens": 2,
+            "tok_s": 4.44
+          }
+        ]
+      },
+      "math_gcd": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "6",
+            "sha256": "e7f6c011776e8db7cd330b54174fd76f7d0216b612387a5ffcfb81e6f0919683",
+            "passed": true,
+            "detail": "last-num 6.0 vs 6",
+            "latency_s": 0.421,
+            "prompt_tokens": 23,
+            "completion_tokens": 2,
+            "tok_s": 4.75
+          },
+          {
+            "content": "6",
+            "sha256": "e7f6c011776e8db7cd330b54174fd76f7d0216b612387a5ffcfb81e6f0919683",
+            "passed": true,
+            "detail": "last-num 6.0 vs 6",
+            "latency_s": 0.401,
+            "prompt_tokens": 23,
+            "completion_tokens": 2,
+            "tok_s": 4.99
+          },
+          {
+            "content": "6",
+            "sha256": "e7f6c011776e8db7cd330b54174fd76f7d0216b612387a5ffcfb81e6f0919683",
+            "passed": true,
+            "detail": "last-num 6.0 vs 6",
+            "latency_s": 0.446,
+            "prompt_tokens": 23,
+            "completion_tokens": 2,
+            "tok_s": 4.49
+          }
+        ]
+      },
+      "math_lcm": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "12",
+            "sha256": "6b51d431df5d7f141cbececcf79edf3dd861c3b4069f0b11661a3eefacbba918",
+            "passed": true,
+            "detail": "last-num 12.0 vs 12",
+            "latency_s": 0.405,
+            "prompt_tokens": 23,
+            "completion_tokens": 2,
+            "tok_s": 4.93
+          },
+          {
+            "content": "12",
+            "sha256": "6b51d431df5d7f141cbececcf79edf3dd861c3b4069f0b11661a3eefacbba918",
+            "passed": true,
+            "detail": "last-num 12.0 vs 12",
+            "latency_s": 0.44,
+            "prompt_tokens": 23,
+            "completion_tokens": 2,
+            "tok_s": 4.54
+          },
+          {
+            "content": "12",
+            "sha256": "6b51d431df5d7f141cbececcf79edf3dd861c3b4069f0b11661a3eefacbba918",
+            "passed": true,
+            "detail": "last-num 12.0 vs 12",
+            "latency_s": 0.316,
+            "prompt_tokens": 23,
+            "completion_tokens": 2,
+            "tok_s": 6.32
+          }
+        ]
+      },
+      "math_pct": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "40",
+            "sha256": "d59eced1ded07f84c145592f65bdf854358e009c5cd705f5215bf18697fed103",
+            "passed": true,
+            "detail": "last-num 40.0 vs 40",
+            "latency_s": 0.323,
+            "prompt_tokens": 19,
+            "completion_tokens": 2,
+            "tok_s": 6.2
+          },
+          {
+            "content": "40",
+            "sha256": "d59eced1ded07f84c145592f65bdf854358e009c5cd705f5215bf18697fed103",
+            "passed": true,
+            "detail": "last-num 40.0 vs 40",
+            "latency_s": 0.635,
+            "prompt_tokens": 19,
+            "completion_tokens": 2,
+            "tok_s": 3.15
+          },
+          {
+            "content": "40",
+            "sha256": "d59eced1ded07f84c145592f65bdf854358e009c5cd705f5215bf18697fed103",
+            "passed": true,
+            "detail": "last-num 40.0 vs 40",
+            "latency_s": 0.303,
+            "prompt_tokens": 19,
+            "completion_tokens": 2,
+            "tok_s": 6.59
+          }
+        ]
+      },
+      "math_square25": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "625",
+            "sha256": "ad723f42c7aba316d944f19f340ce47d8e0c6fb354d212736ec4782314a6824a",
+            "passed": true,
+            "detail": "last-num 625.0 vs 625",
+            "latency_s": 0.387,
+            "prompt_tokens": 17,
+            "completion_tokens": 2,
+            "tok_s": 5.16
+          },
+          {
+            "content": "625",
+            "sha256": "ad723f42c7aba316d944f19f340ce47d8e0c6fb354d212736ec4782314a6824a",
+            "passed": true,
+            "detail": "last-num 625.0 vs 625",
+            "latency_s": 0.451,
+            "prompt_tokens": 17,
+            "completion_tokens": 2,
+            "tok_s": 4.44
+          },
+          {
+            "content": "625",
+            "sha256": "ad723f42c7aba316d944f19f340ce47d8e0c6fb354d212736ec4782314a6824a",
+            "passed": true,
+            "detail": "last-num 625.0 vs 625",
+            "latency_s": 0.409,
+            "prompt_tokens": 17,
+            "completion_tokens": 2,
+            "tok_s": 4.89
+          }
+        ]
+      },
+      "math_rem": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "4",
+            "sha256": "4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a",
+            "passed": true,
+            "detail": "last-num 4.0 vs 4",
+            "latency_s": 0.448,
+            "prompt_tokens": 23,
+            "completion_tokens": 2,
+            "tok_s": 4.47
+          },
+          {
+            "content": "4",
+            "sha256": "4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a",
+            "passed": true,
+            "detail": "last-num 4.0 vs 4",
+            "latency_s": 0.414,
+            "prompt_tokens": 23,
+            "completion_tokens": 2,
+            "tok_s": 4.83
+          },
+          {
+            "content": "4",
+            "sha256": "4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a",
+            "passed": true,
+            "detail": "last-num 4.0 vs 4",
+            "latency_s": 0.511,
+            "prompt_tokens": 23,
+            "completion_tokens": 2,
+            "tok_s": 3.92
+          }
+        ]
+      },
+      "math_sum1to10": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "55",
+            "sha256": "02d20bbd7e394ad5999a4cebabac9619732c343a4cac99470c03e23ba2bdc2bc",
+            "passed": true,
+            "detail": "last-num 55.0 vs 55",
+            "latency_s": 0.377,
+            "prompt_tokens": 26,
+            "completion_tokens": 2,
+            "tok_s": 5.3
+          },
+          {
+            "content": "55",
+            "sha256": "02d20bbd7e394ad5999a4cebabac9619732c343a4cac99470c03e23ba2bdc2bc",
+            "passed": true,
+            "detail": "last-num 55.0 vs 55",
+            "latency_s": 0.326,
+            "prompt_tokens": 26,
+            "completion_tokens": 2,
+            "tok_s": 6.13
+          },
+          {
+            "content": "55",
+            "sha256": "02d20bbd7e394ad5999a4cebabac9619732c343a4cac99470c03e23ba2bdc2bc",
+            "passed": true,
+            "detail": "last-num 55.0 vs 55",
+            "latency_s": 0.347,
+            "prompt_tokens": 26,
+            "completion_tokens": 2,
+            "tok_s": 5.76
+          }
+        ]
+      },
+      "reason_tom": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "4",
+            "sha256": "4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a",
+            "passed": true,
+            "detail": "last-num 4.0 vs 4",
+            "latency_s": 0.336,
+            "prompt_tokens": 37,
+            "completion_tokens": 2,
+            "tok_s": 5.95
+          },
+          {
+            "content": "4",
+            "sha256": "4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a",
+            "passed": true,
+            "detail": "last-num 4.0 vs 4",
+            "latency_s": 0.358,
+            "prompt_tokens": 37,
+            "completion_tokens": 2,
+            "tok_s": 5.58
+          },
+          {
+            "content": "4",
+            "sha256": "4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a",
+            "passed": true,
+            "detail": "last-num 4.0 vs 4",
+            "latency_s": 0.358,
+            "prompt_tokens": 37,
+            "completion_tokens": 2,
+            "tok_s": 5.59
+          }
+        ]
+      },
+      "reason_train": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "60",
+            "sha256": "39fa9ec190eee7b6f4dff1100d6343e10918d044c75eac8f9e9a2596173f80c9",
+            "passed": true,
+            "detail": "last-num 60.0 vs 60",
+            "latency_s": 0.38,
+            "prompt_tokens": 30,
+            "completion_tokens": 2,
+            "tok_s": 5.26
+          },
+          {
+            "content": "60",
+            "sha256": "39fa9ec190eee7b6f4dff1100d6343e10918d044c75eac8f9e9a2596173f80c9",
+            "passed": true,
+            "detail": "last-num 60.0 vs 60",
+            "latency_s": 0.369,
+            "prompt_tokens": 30,
+            "completion_tokens": 2,
+            "tok_s": 5.43
+          },
+          {
+            "content": "60",
+            "sha256": "39fa9ec190eee7b6f4dff1100d6343e10918d044c75eac8f9e9a2596173f80c9",
+            "passed": true,
+            "detail": "last-num 60.0 vs 60",
+            "latency_s": 0.464,
+            "prompt_tokens": 30,
+            "completion_tokens": 2,
+            "tok_s": 4.31
+          }
+        ]
+      },
+      "reason_age": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "12",
+            "sha256": "6b51d431df5d7f141cbececcf79edf3dd861c3b4069f0b11661a3eefacbba918",
+            "passed": true,
+            "detail": "last-num 12.0 vs 12",
+            "latency_s": 0.334,
+            "prompt_tokens": 24,
+            "completion_tokens": 2,
+            "tok_s": 5.98
+          },
+          {
+            "content": "12",
+            "sha256": "6b51d431df5d7f141cbececcf79edf3dd861c3b4069f0b11661a3eefacbba918",
+            "passed": true,
+            "detail": "last-num 12.0 vs 12",
+            "latency_s": 0.398,
+            "prompt_tokens": 24,
+            "completion_tokens": 2,
+            "tok_s": 5.03
+          },
+          {
+            "content": "12",
+            "sha256": "6b51d431df5d7f141cbececcf79edf3dd861c3b4069f0b11661a3eefacbba918",
+            "passed": true,
+            "detail": "last-num 12.0 vs 12",
+            "latency_s": 0.419,
+            "prompt_tokens": 24,
+            "completion_tokens": 2,
+            "tok_s": 4.78
+          }
+        ]
+      },
+      "reason_half": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "35",
+            "sha256": "9f14025af0065b30e47e23ebb3b491d39ae8ed17d33739e5ff3827ffb3634953",
+            "passed": true,
+            "detail": "last-num 35.0 vs 35",
+            "latency_s": 0.347,
+            "prompt_tokens": 27,
+            "completion_tokens": 2,
+            "tok_s": 5.76
+          },
+          {
+            "content": "35",
+            "sha256": "9f14025af0065b30e47e23ebb3b491d39ae8ed17d33739e5ff3827ffb3634953",
+            "passed": true,
+            "detail": "last-num 35.0 vs 35",
+            "latency_s": 0.321,
+            "prompt_tokens": 27,
+            "completion_tokens": 2,
+            "tok_s": 6.23
+          },
+          {
+            "content": "35",
+            "sha256": "9f14025af0065b30e47e23ebb3b491d39ae8ed17d33739e5ff3827ffb3634953",
+            "passed": true,
+            "detail": "last-num 35.0 vs 35",
+            "latency_s": 0.372,
+            "prompt_tokens": 27,
+            "completion_tokens": 2,
+            "tok_s": 5.38
+          }
+        ]
+      },
+      "reason_consec": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "7",
+            "sha256": "7902699be42c8a8e46fbbb4501726517e86b22c56a189f7625a6da49081b2451",
+            "passed": true,
+            "detail": "last-num 7.0 vs 7",
+            "latency_s": 0.346,
+            "prompt_tokens": 25,
+            "completion_tokens": 2,
+            "tok_s": 5.77
+          },
+          {
+            "content": "7",
+            "sha256": "7902699be42c8a8e46fbbb4501726517e86b22c56a189f7625a6da49081b2451",
+            "passed": true,
+            "detail": "last-num 7.0 vs 7",
+            "latency_s": 0.333,
+            "prompt_tokens": 25,
+            "completion_tokens": 2,
+            "tok_s": 6.0
+          },
+          {
+            "content": "7",
+            "sha256": "7902699be42c8a8e46fbbb4501726517e86b22c56a189f7625a6da49081b2451",
+            "passed": true,
+            "detail": "last-num 7.0 vs 7",
+            "latency_s": 0.362,
+            "prompt_tokens": 25,
+            "completion_tokens": 2,
+            "tok_s": 5.53
+          }
+        ]
+      },
+      "reason_minutes": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "150",
+            "sha256": "9ae2bdd7beedc2e766c6b76585530e16925115707dc7a06ab5ee4aa2776b2c7b",
+            "passed": true,
+            "detail": "last-num 150.0 vs 150",
+            "latency_s": 0.316,
+            "prompt_tokens": 22,
+            "completion_tokens": 2,
+            "tok_s": 6.33
+          },
+          {
+            "content": "150",
+            "sha256": "9ae2bdd7beedc2e766c6b76585530e16925115707dc7a06ab5ee4aa2776b2c7b",
+            "passed": true,
+            "detail": "last-num 150.0 vs 150",
+            "latency_s": 0.399,
+            "prompt_tokens": 22,
+            "completion_tokens": 2,
+            "tok_s": 5.01
+          },
+          {
+            "content": "150",
+            "sha256": "9ae2bdd7beedc2e766c6b76585530e16925115707dc7a06ab5ee4aa2776b2c7b",
+            "passed": true,
+            "detail": "last-num 150.0 vs 150",
+            "latency_s": 0.325,
+            "prompt_tokens": 22,
+            "completion_tokens": 2,
+            "tok_s": 6.15
+          }
+        ]
+      },
+      "reason_pct": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "50",
+            "sha256": "1a6562590ef19d1045d06c4055742d38288e9e6dcd71ccde5cee80f1d5a774eb",
+            "passed": true,
+            "detail": "last-num 50.0 vs 50",
+            "latency_s": 0.322,
+            "prompt_tokens": 20,
+            "completion_tokens": 2,
+            "tok_s": 6.2
+          },
+          {
+            "content": "50",
+            "sha256": "1a6562590ef19d1045d06c4055742d38288e9e6dcd71ccde5cee80f1d5a774eb",
+            "passed": true,
+            "detail": "last-num 50.0 vs 50",
+            "latency_s": 0.286,
+            "prompt_tokens": 20,
+            "completion_tokens": 2,
+            "tok_s": 6.98
+          },
+          {
+            "content": "50",
+            "sha256": "1a6562590ef19d1045d06c4055742d38288e9e6dcd71ccde5cee80f1d5a774eb",
+            "passed": true,
+            "detail": "last-num 50.0 vs 50",
+            "latency_s": 0.398,
+            "prompt_tokens": 20,
+            "completion_tokens": 2,
+            "tok_s": 5.02
+          }
+        ]
+      },
+      "reason_square": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "100",
+            "sha256": "ad57366865126e55649ecb23ae1d48887544976efea46a48eb5d85a6eeb4d306",
+            "passed": true,
+            "detail": "last-num 100.0 vs 100",
+            "latency_s": 0.324,
+            "prompt_tokens": 31,
+            "completion_tokens": 2,
+            "tok_s": 6.17
+          },
+          {
+            "content": "100",
+            "sha256": "ad57366865126e55649ecb23ae1d48887544976efea46a48eb5d85a6eeb4d306",
+            "passed": true,
+            "detail": "last-num 100.0 vs 100",
+            "latency_s": 0.37,
+            "prompt_tokens": 31,
+            "completion_tokens": 2,
+            "tok_s": 5.41
+          },
+          {
+            "content": "100",
+            "sha256": "ad57366865126e55649ecb23ae1d48887544976efea46a48eb5d85a6eeb4d306",
+            "passed": true,
+            "detail": "last-num 100.0 vs 100",
+            "latency_s": 0.316,
+            "prompt_tokens": 31,
+            "completion_tokens": 2,
+            "tok_s": 6.33
+          }
+        ]
+      },
+      "reason_pages": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "36",
+            "sha256": "76a50887d8f1c2e9301755428990ad81479ee21c25b43215cf524541e0503269",
+            "passed": true,
+            "detail": "last-num 36.0 vs 36",
+            "latency_s": 0.313,
+            "prompt_tokens": 27,
+            "completion_tokens": 2,
+            "tok_s": 6.39
+          },
+          {
+            "content": "36",
+            "sha256": "76a50887d8f1c2e9301755428990ad81479ee21c25b43215cf524541e0503269",
+            "passed": true,
+            "detail": "last-num 36.0 vs 36",
+            "latency_s": 0.392,
+            "prompt_tokens": 27,
+            "completion_tokens": 2,
+            "tok_s": 5.1
+          },
+          {
+            "content": "36",
+            "sha256": "76a50887d8f1c2e9301755428990ad81479ee21c25b43215cf524541e0503269",
+            "passed": true,
+            "detail": "last-num 36.0 vs 36",
+            "latency_s": 0.347,
+            "prompt_tokens": 27,
+            "completion_tokens": 2,
+            "tok_s": 5.77
+          }
+        ]
+      },
+      "reason_div": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "8",
+            "sha256": "2c624232cdd221771294dfbb310aca000a0df6ac8b66b696d90ef06fdefb64a3",
+            "passed": true,
+            "detail": "last-num 8.0 vs 8",
+            "latency_s": 0.345,
+            "prompt_tokens": 19,
+            "completion_tokens": 2,
+            "tok_s": 5.8
+          },
+          {
+            "content": "8",
+            "sha256": "2c624232cdd221771294dfbb310aca000a0df6ac8b66b696d90ef06fdefb64a3",
+            "passed": true,
+            "detail": "last-num 8.0 vs 8",
+            "latency_s": 0.362,
+            "prompt_tokens": 19,
+            "completion_tokens": 2,
+            "tok_s": 5.53
+          },
+          {
+            "content": "8",
+            "sha256": "2c624232cdd221771294dfbb310aca000a0df6ac8b66b696d90ef06fdefb64a3",
+            "passed": true,
+            "detail": "last-num 8.0 vs 8",
+            "latency_s": 0.372,
+            "prompt_tokens": 19,
+            "completion_tokens": 2,
+            "tok_s": 5.37
+          }
+        ]
+      },
+      "code_add": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "def add(a, b): return a + b",
+            "sha256": "498c767f57c8776125776f9a1eeb1c247c2a57e22aa4a745e97c2810e8afabe5",
+            "passed": true,
+            "detail": "check return a+b",
+            "latency_s": 0.377,
+            "prompt_tokens": 25,
+            "completion_tokens": 11,
+            "tok_s": 29.18
+          },
+          {
+            "content": "def add(a, b): return a + b",
+            "sha256": "498c767f57c8776125776f9a1eeb1c247c2a57e22aa4a745e97c2810e8afabe5",
+            "passed": true,
+            "detail": "check return a+b",
+            "latency_s": 0.372,
+            "prompt_tokens": 25,
+            "completion_tokens": 11,
+            "tok_s": 29.58
+          },
+          {
+            "content": "def add(a, b): return a+b",
+            "sha256": "3b6790ca608d99fa6aefb28fc0d8949a1613d4069838d79a79b73eed54634c11",
+            "passed": true,
+            "detail": "check return a+b",
+            "latency_s": 0.395,
+            "prompt_tokens": 25,
+            "completion_tokens": 10,
+            "tok_s": 25.34
+          }
+        ]
+      },
+      "code_fib": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "```python\ndef fib(n):\n    if n <= 1:\n        return n\n    return fib(n-1) + fib(n-2)\n```",
+            "sha256": "f275c0a124ce84d6896e6c4f63905310024aef7ad7e578fa9f789b9de0d3c3ff",
+            "passed": true,
+            "detail": "check recursive fib calls",
+            "latency_s": 0.834,
+            "prompt_tokens": 22,
+            "completion_tokens": 33,
+            "tok_s": 39.56
+          },
+          {
+            "content": "```python\ndef fib(n):\n    if n <= 1:\n        return n\n    return fib(n-1) + fib(n-2)\n```",
+            "sha256": "f275c0a124ce84d6896e6c4f63905310024aef7ad7e578fa9f789b9de0d3c3ff",
+            "passed": true,
+            "detail": "check recursive fib calls",
+            "latency_s": 0.403,
+            "prompt_tokens": 22,
+            "completion_tokens": 33,
+            "tok_s": 81.92
+          },
+          {
+            "content": "```python\ndef fib(n):\n    if n <= 1:\n        return n\n    return fib(n-1) + fib(n-2)\n```",
+            "sha256": "f275c0a124ce84d6896e6c4f63905310024aef7ad7e578fa9f789b9de0d3c3ff",
+            "passed": true,
+            "detail": "check recursive fib calls",
+            "latency_s": 0.37,
+            "prompt_tokens": 22,
+            "completion_tokens": 33,
+            "tok_s": 89.1
+          }
+        ]
+      },
+      "code_even": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "def is_even(n): \n    return n % 2 == 0",
+            "sha256": "ef848f343cc019108cbc9728a84dc19ba2e45d70ef8f05f5af750611892ed8f2",
+            "passed": true,
+            "detail": "check n % 2",
+            "latency_s": 0.426,
+            "prompt_tokens": 28,
+            "completion_tokens": 17,
+            "tok_s": 39.94
+          },
+          {
+            "content": "def is_even(n): \n    return n % 2 == 0",
+            "sha256": "ef848f343cc019108cbc9728a84dc19ba2e45d70ef8f05f5af750611892ed8f2",
+            "passed": true,
+            "detail": "check n % 2",
+            "latency_s": 0.454,
+            "prompt_tokens": 28,
+            "completion_tokens": 17,
+            "tok_s": 37.47
+          },
+          {
+            "content": "def is_even(n): \n    return n % 2 == 0",
+            "sha256": "ef848f343cc019108cbc9728a84dc19ba2e45d70ef8f05f5af750611892ed8f2",
+            "passed": true,
+            "detail": "check n % 2",
+            "latency_s": 0.476,
+            "prompt_tokens": 28,
+            "completion_tokens": 17,
+            "tok_s": 35.71
+          }
+        ]
+      },
+      "code_cap": {
+        "passes": 1,
+        "repeats": 3,
+        "passed": false,
+        "draws": [
+          {
+            "content": "def capitalize(s):\n    if not s:\n        return s\n    return s[0].upper() + s[1:]",
+            "sha256": "5d3d7a6114591b70dadc02fd7a2da7fcbd0e210b0e53724288dcbe5b9cf6f5ac",
+            "passed": true,
+            "detail": "check str capitalize",
+            "latency_s": 0.477,
+            "prompt_tokens": 23,
+            "completion_tokens": 27,
+            "tok_s": 56.62
+          },
+          {
+            "content": "def capitalize(s): \n    return s[:1].upper() + s[1:]",
+            "sha256": "54ed1e3f6e9fafa9ad406a2a3acc7f81268fff4b976bd6cd52667d669da9be23",
+            "passed": false,
+            "detail": "check str capitalize",
+            "latency_s": 0.566,
+            "prompt_tokens": 23,
+            "completion_tokens": 19,
+            "tok_s": 33.57
+          },
+          {
+            "content": "def capitalize(s): \n    return s[:1].upper() + s[1:]",
+            "sha256": "54ed1e3f6e9fafa9ad406a2a3acc7f81268fff4b976bd6cd52667d669da9be23",
+            "passed": false,
+            "detail": "check str capitalize",
+            "latency_s": 0.501,
+            "prompt_tokens": 23,
+            "completion_tokens": 19,
+            "tok_s": 37.93
+          }
+        ]
+      },
+      "code_reverse": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "x.reverse()",
+            "sha256": "b0522d8aa01ccc8acf2330ecf86f7bf1aa52cfdc0d6dce85fe1913dd62c5603b",
+            "passed": true,
+            "detail": "check slicing or in-place reverse",
+            "latency_s": 0.322,
+            "prompt_tokens": 34,
+            "completion_tokens": 4,
+            "tok_s": 12.44
+          },
+          {
+            "content": "x.reverse()",
+            "sha256": "b0522d8aa01ccc8acf2330ecf86f7bf1aa52cfdc0d6dce85fe1913dd62c5603b",
+            "passed": true,
+            "detail": "check slicing or in-place reverse",
+            "latency_s": 0.613,
+            "prompt_tokens": 34,
+            "completion_tokens": 4,
+            "tok_s": 6.52
+          },
+          {
+            "content": "x.reverse()",
+            "sha256": "b0522d8aa01ccc8acf2330ecf86f7bf1aa52cfdc0d6dce85fe1913dd62c5603b",
+            "passed": true,
+            "detail": "check slicing or in-place reverse",
+            "latency_s": 0.359,
+            "prompt_tokens": 34,
+            "completion_tokens": 4,
+            "tok_s": 11.14
+          }
+        ]
+      },
+      "code_max3": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "def max_of_three(a, b, c):\n    return max(a, b, c)",
+            "sha256": "ae1450d520526651278852c9fcf2b88b580fa538a2018a0472d2b0019b5c0c47",
+            "passed": true,
+            "detail": "check max",
+            "latency_s": 0.706,
+            "prompt_tokens": 30,
+            "completion_tokens": 21,
+            "tok_s": 29.76
+          },
+          {
+            "content": "def max_of_three(a, b, c):\n    return max(a, b, c)",
+            "sha256": "ae1450d520526651278852c9fcf2b88b580fa538a2018a0472d2b0019b5c0c47",
+            "passed": true,
+            "detail": "check max",
+            "latency_s": 0.428,
+            "prompt_tokens": 30,
+            "completion_tokens": 21,
+            "tok_s": 49.02
+          },
+          {
+            "content": "def max_of_three(a, b, c):\n    return max(a, b, c)",
+            "sha256": "ae1450d520526651278852c9fcf2b88b580fa538a2018a0472d2b0019b5c0c47",
+            "passed": true,
+            "detail": "check max",
+            "latency_s": 0.526,
+            "prompt_tokens": 30,
+            "completion_tokens": 21,
+            "tok_s": 39.91
+          }
+        ]
+      },
+      "multi_es": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "El hielo flota en el agua porque es menos denso que el agua l\u00edquida, ya que sus mol\u00e9culas se expanden al congelarse.",
+            "sha256": "7c184034ed6bfa220472e2e50133b34cb37a797bdd89a1aa391e38de2dc1611b",
+            "passed": true,
+            "detail": "len=116",
+            "latency_s": 1.254,
+            "prompt_tokens": 23,
+            "completion_tokens": 34,
+            "tok_s": 27.1
+          },
+          {
+            "content": "El hielo flota en el agua porque es menos denso que el agua l\u00edquida, ya que sus mol\u00e9culas se expanden al congelarse formando una estructura cristalina que ocupa m\u00e1s volumen.",
+            "sha256": "704bfdfa4ea4a7b318f1d344d447f5a527919d7bd38376148648b8847195e8b7",
+            "passed": true,
+            "detail": "len=173",
+            "latency_s": 0.637,
+            "prompt_tokens": 23,
+            "completion_tokens": 46,
+            "tok_s": 72.19
+          },
+          {
+            "content": "El hielo flota en el agua porque es menos denso que el agua l\u00edquida, ya que sus mol\u00e9culas se expanden al congelarse.",
+            "sha256": "7c184034ed6bfa220472e2e50133b34cb37a797bdd89a1aa391e38de2dc1611b",
+            "passed": true,
+            "detail": "len=116",
+            "latency_s": 0.795,
+            "prompt_tokens": 23,
+            "completion_tokens": 34,
+            "tok_s": 42.78
+          }
+        ]
+      },
+      "multi_fr": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "Le ciel est bleu parce que la lumi\u00e8re du soleil est diffus\u00e9e par les mol\u00e9cules de l'atmosph\u00e8re, et la couleur bleue, ayant une longueur d'onde plus courte, est dispers\u00e9e beaucoup plus fortement que les autres couleurs.",
+            "sha256": "4de73c1c810b5c8e83862ceb1bda0ecd84c8f58345f804ec98e4481db8965553",
+            "passed": true,
+            "detail": "len=218",
+            "latency_s": 0.848,
+            "prompt_tokens": 20,
+            "completion_tokens": 55,
+            "tok_s": 64.86
+          },
+          {
+            "content": "Le ciel est bleu parce que la lumi\u00e8re du soleil est diffus\u00e9e par les mol\u00e9cules de l'atmosph\u00e8re, et la couleur bleue, ayant une longueur d'onde plus courte, est dispers\u00e9e beaucoup plus fortement que les autres couleurs.",
+            "sha256": "4de73c1c810b5c8e83862ceb1bda0ecd84c8f58345f804ec98e4481db8965553",
+            "passed": true,
+            "detail": "len=218",
+            "latency_s": 0.631,
+            "prompt_tokens": 20,
+            "completion_tokens": 55,
+            "tok_s": 87.22
+          },
+          {
+            "content": "Le ciel est bleu parce que la lumi\u00e8re du soleil est diffus\u00e9e par les mol\u00e9cules de l'atmosph\u00e8re, et la couleur bleue, ayant une longueur d'onde plus courte, est dispers\u00e9e beaucoup plus fortement que les autres couleurs.",
+            "sha256": "4de73c1c810b5c8e83862ceb1bda0ecd84c8f58345f804ec98e4481db8965553",
+            "passed": true,
+            "detail": "len=218",
+            "latency_s": 1.083,
+            "prompt_tokens": 20,
+            "completion_tokens": 55,
+            "tok_s": 50.8
+          }
+        ]
+      },
+      "multi_de": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "4",
+            "sha256": "4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a",
+            "passed": true,
+            "detail": "missing none in output",
+            "latency_s": 0.426,
+            "prompt_tokens": 20,
+            "completion_tokens": 2,
+            "tok_s": 4.69
+          },
+          {
+            "content": "4",
+            "sha256": "4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a",
+            "passed": true,
+            "detail": "missing none in output",
+            "latency_s": 0.371,
+            "prompt_tokens": 20,
+            "completion_tokens": 2,
+            "tok_s": 5.4
+          },
+          {
+            "content": "4",
+            "sha256": "4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a",
+            "passed": true,
+            "detail": "missing none in output",
+            "latency_s": 0.344,
+            "prompt_tokens": 20,
+            "completion_tokens": 2,
+            "tok_s": 5.82
+          }
+        ]
+      },
+      "choice_largest": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "9",
+            "sha256": "19581e27de7ced00ff1ce50b2047e7a567c76b1cbaebabe5ef03f7c3017bb5b7",
+            "passed": true,
+            "detail": "last-num 9.0 vs 9",
+            "latency_s": 0.483,
+            "prompt_tokens": 26,
+            "completion_tokens": 2,
+            "tok_s": 4.14
+          },
+          {
+            "content": "9",
+            "sha256": "19581e27de7ced00ff1ce50b2047e7a567c76b1cbaebabe5ef03f7c3017bb5b7",
+            "passed": true,
+            "detail": "last-num 9.0 vs 9",
+            "latency_s": 0.523,
+            "prompt_tokens": 26,
+            "completion_tokens": 2,
+            "tok_s": 3.83
+          },
+          {
+            "content": "9",
+            "sha256": "19581e27de7ced00ff1ce50b2047e7a567c76b1cbaebabe5ef03f7c3017bb5b7",
+            "passed": true,
+            "detail": "last-num 9.0 vs 9",
+            "latency_s": 0.41,
+            "prompt_tokens": 26,
+            "completion_tokens": 2,
+            "tok_s": 4.87
+          }
+        ]
+      },
+      "choice_first": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "b",
+            "sha256": "3e23e8160039594a33894f6564e1b1348bbd7a0088d42c4acb73eeaed59c009d",
+            "passed": true,
+            "detail": "starts with b: 'b'",
+            "latency_s": 0.404,
+            "prompt_tokens": 21,
+            "completion_tokens": 2,
+            "tok_s": 4.95
+          },
+          {
+            "content": "b",
+            "sha256": "3e23e8160039594a33894f6564e1b1348bbd7a0088d42c4acb73eeaed59c009d",
+            "passed": true,
+            "detail": "starts with b: 'b'",
+            "latency_s": 0.282,
+            "prompt_tokens": 21,
+            "completion_tokens": 2,
+            "tok_s": 7.1
+          },
+          {
+            "content": "b",
+            "sha256": "3e23e8160039594a33894f6564e1b1348bbd7a0088d42c4acb73eeaed59c009d",
+            "passed": true,
+            "detail": "starts with b: 'b'",
+            "latency_s": 0.422,
+            "prompt_tokens": 21,
+            "completion_tokens": 2,
+            "tok_s": 4.74
+          }
+        ]
+      },
+      "choice_vowels": {
+        "passes": 3,
+        "repeats": 3,
+        "passed": true,
+        "draws": [
+          {
+            "content": "2",
+            "sha256": "d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35",
+            "passed": true,
+            "detail": "last-num 2.0 vs 2",
+            "latency_s": 0.336,
+            "prompt_tokens": 19,
+            "completion_tokens": 2,
+            "tok_s": 5.96
+          },
+          {
+            "content": "2",
+            "sha256": "d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35",
+            "passed": true,
+            "detail": "last-num 2.0 vs 2",
+            "latency_s": 0.307,
+            "prompt_tokens": 19,
+            "completion_tokens": 2,
+            "tok_s": 6.51
+          },
+          {
+            "content": "2",
+            "sha256": "d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35",
+            "passed": true,
+            "detail": "last-num 2.0 vs 2",
+            "latency_s": 0.297,
+            "prompt_tokens": 19,
+            "completion_tokens": 2,
+            "tok_s": 6.72
+          }
+        ]
+      }
+    }
+  },
+  "summaries": {
+    "remote": {
+      "tasks": 50,
+      "graded": 50,
+      "passed": 49,
+      "pass_rate": 0.98,
+      "median_tok_s": 6.52,
+      "mean_tok_s": 14.73
+    }
+  },
+  "cross_arm_agreement_vs_remote": {},
+  "notes": [
+    "temp=0, top_p=1, non-stream, logprobs=5 on every arm",
+    "remote: OpenRouter deepseek/deepseek-v4-flash-0731 on pinned coreweave/fp8, fallbacks disabled (same reference as the published comparison)",
+    "remote tok_s is network-inclusive and NOT model speed; local tok_s is genuine engine throughput on this M5 Max",
+    "pass means the same programmatic grader passed on the original and the derivative"
+  ]
+}

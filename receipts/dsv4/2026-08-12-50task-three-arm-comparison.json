@@ -1,0 +1,74 @@
+{
+  "schema": "dsv4-50task-three-arm-quality-speed-v1",
+  "generated_utc": "2026-08-12",
+  "task_count": 50,
+  "protocol": {
+    "repeats": 3,
+    "pass_rule": "majority of 3 draws",
+    "temperature": 0,
+    "top_p": 1,
+    "non_stream": true,
+    "logprobs_top": 5,
+    "remote": "OpenRouter deepseek/deepseek-v4-flash-0731 pinned coreweave/fp8, fallbacks disabled, reasoning off",
+    "local_engine": "target-only Gold view, 8-bit affine g64, mlx-serve (direct and MTPLX-routed, same engine)"
+  },
+  "arms": {
+    "original_openrouter_coreweave_fp8": {
+      "pass": 50,
+      "graded": 50,
+      "pass_rate": 1.0,
+      "by_category": {
+        "exact": "8/8",
+        "json": "8/8",
+        "math": "12/12",
+        "reason": "10/10",
+        "code": "6/6",
+        "multi": "3/3",
+        "choice": "3/3"
+      }
+    },
+    "target_only_direct_mlx_serve": {
+      "pass": 35,
+      "graded": 48,
+      "pass_rate": 0.729,
+      "mean_tok_s": 10.99,
+      "median_tok_s": 5.29,
+      "by_category": {
+        "exact": "7/7",
+        "json": "8/8",
+        "math": "7/12",
+        "reason": "3/10",
+        "code": "6/6",
+        "multi": "2/2",
+        "choice": "2/3"
+      }
+    },
+    "target_only_mtplx_routed": {
+      "pass": 35,
+      "graded": 48,
+      "pass_rate": 0.729,
+      "mean_tok_s": 10.73,
+      "median_tok_s": 6.95,
+      "by_category": {
+        "exact": "7/7",
+        "json": "8/8",
+        "math": "7/12",
+        "reason": "3/10",
+        "code": "6/6",
+        "multi": "2/2",
+        "choice": "2/3"
+      }
+    }
+  },
+  "notes": [
+    "QUALITY LOSS is real and localized: EXACT/JSON/CODE at parity; MATH 7/12 vs 12/12 and REASONING 3/10 vs 10/10 regress on the 8-bit target-only artifact; CHOICE 2/3 vs 3/3.",
+    "NO SPEED LOSS: local mean 10.5-11.0 tok/s is genuine engine throughput; remote '13.2 tok/s' is network-inclusive and NOT model speed.",
+    "2 of 50 local tasks ungraded due to an mlx-serve UTF-8 decode bug on multi-byte output (local graded 48/50); recorded for fix.",
+    "MTPLX == direct mlx-serve byte-for-byte behavior (same delegated engine)."
+  ],
+  "source_receipts": [
+    "quality-speed-20260812T030200Z.json",
+    "quality-speed-20260812T031148Z.json",
+    "quality-speed-20260812T030620Z.json"
+  ]
+}

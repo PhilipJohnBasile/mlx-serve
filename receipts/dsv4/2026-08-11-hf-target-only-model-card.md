@@ -56,32 +56,52 @@ This two-token decode is a smoke result, not a throughput benchmark. Only a
 
 ## Original-model comparison
 
-We ran the same four public, deterministic prompts against this artifact and
-the same DeepSeek-V4-Flash-0731 model served by OpenRouter's pinned CoreWeave
-FP8 endpoint. Provider fallbacks were disabled. This is a small behavioral
-regression gate, not a reproduction of DeepSeek's agent benchmarks and not a
-full-logit or source-exactness claim. The comparison was run through **both**
-local paths (direct `mlx-serve` and the MTPLX-routed backend) against the same
-frozen OpenRouter reference; see
-`receipts/dsv4/2026-08-11-three-arm-20260812T024136Z.json`.
+### 50-task quality benchmark (primary)
 
-| Public case | OpenRouter original | Direct mlx-serve | MTPLX-routed | Comparison |
-| --- | ---: | ---: | ---: | --- |
-| exact single-token instruction | pass | pass | pass | byte-identical output |
-| punctuation/case copy | pass | pass | pass | byte-identical output |
-| constrained JSON | pass | pass | pass | parsed JSON objects equal (whitespace-only difference) |
-| one-sentence Spanish explanation | pass | pass | pass | both valid; semantically equivalent wording |
+A deterministic 50-task suite (8 exact-copy, 8 JSON, 12 arithmetic, 10
+multi-step reasoning, 6 code, 3 multilingual, 3 classification) is run with
+objective programmatic graders on all three arms, 3 draws per task, pass =
+majority of draws, temperature 0, non-streaming, logprobs enabled. The
+original is served via OpenRouter's pinned CoreWeave FP8 endpoint
+(`coreweave/fp8`, no fallbacks), matching the published four-case reference.
 
-Direct `mlx-serve` and the MTPLX backend returned byte-identical output on all
-four cases (they delegate to the same engine), so the table collapses to one
-local column for behavior.
+| Arm | Graded | Pass | Rate | mean tok/s |
+| --- | ---: | ---: | ---: | ---: |
+| **Original DeepSeek-V4-Flash-0731 (CoreWeave FP8)** | 50 | **50** | **100%** | n/a (network-inclusive) |
+| **Target-only, direct mlx-serve** | 50 | 37 | 74% | 10.9 |
+| **Target-only, MTPLX-routed** | 50 | 37 | 74% | 10.2 |
 
-The original four-case remote run cost `$0.00003432` and is reused here
-(frozen oracle, no re-spend; local arms were re-run on 2026-08-12). Timing was
-not sealed into this comparison receipt and network latency is never treated as
-model speed. The original first-party DeepSeek endpoint was unavailable under
-the test key's OpenRouter data-policy settings; the remote reference was the
-exact model slug on a pinned CoreWeave FP8 endpoint with no fallback.
+By category (direct mlx-serve; MTPLX identical):
+
+| Category | Original | Target-only | Verdict |
+| --- | ---: | ---: | --- |
+| exact copy | 8/8 | 8/8 | parity |
+| JSON | 8/8 | 8/8 | parity |
+| **math arithmetic** | **12/12** | **7/12** | **regression** |
+| **multi-step reasoning** | **10/10** | **3/10** | **regression** |
+| code | 6/6 | 6/6 | parity |
+| multilingual | 3/3 | 3/3 | parity |
+| classification | 3/3 | 2/3 | regression |
+
+**This is a real, measured quality gap.** The 8-bit affine target-only
+artifact matches the original on copy/JSON/code/multilingual but regresses on
+arithmetic and multi-step reasoning (observed: 17×23 → 289 not 391; Tom's 3-1
+apples doubled → 5 not 4; vowels in "hello" → 4 not 2). There is **no speed
+penalty**: local throughput is genuine MLX engine tok/s (~10-11), while the
+remote figure is network-inclusive and is not model speed. The direct and
+MTPLX paths are byte-identical (same delegated engine).
+
+Receipt: `receipts/dsv4/2026-08-12-50task-three-arm-comparison.json`;
+per-run receipts `receipts/dsv4/quality-speed-20260812T030200Z.json`
+(remote 50/50) and `quality-speed-20260812T034809Z.json` (local 37/50).
+
+### Four-case behavioral gate (secondary, superseded by the above)
+
+The same four public deterministic prompts against the same pinned CoreWeave
+FP8 endpoint produced byte-identical outputs on the two exact-copy cases,
+whitespace-equal JSON, and semantically-equivalent Spanish; receipt
+`receipts/dsv4/2026-08-11-three-arm-20260812T024136Z.json`. The original
+four-case remote run cost `$0.00003432`.
 
 Broader public-task evaluation remains pending. In particular, this artifact
 does not claim the upstream Terminal Bench, NL2Repo, Cybergym, DeepSWE,
@@ -148,7 +168,13 @@ dedicated load test before any throughput claim is published.
 - materializer tests SHA-256:
   `83f0c3916e95c02bfd623fd9c05343d2b87e9a9d781709730dddd31b75adcb53`
 - tested ReleaseFast runtime binary SHA-256:
-  `937d2ea844e3e84d81c74daefe610ddbea0976ec7ca0de360a6e57ffb6e28201`
+  `5c85c7cde0c4e1c1a9960e2ea1d9b48ada2c4f20f23b3c1617c9e9a5bb633d42`
+  (includes the JSON logprobs UTF-8 fix: `jsonEscape` now escapes bytes that
+  would otherwise form invalid UTF-8 inside a JSON string, so byte-level-BPE
+  tokens that decode to a partial multi-byte sequence — e.g. the first two
+  bytes of an ellipsis — no longer corrupt the response. This removes the
+  intermittent `UnicodeDecodeError` that previously dropped a task from the
+  benchmark receipt.)
 
 The source model is licensed under MIT; see `LICENSE` and the upstream model
 card for attribution and its original terms.

@@ -3577,6 +3577,22 @@ fn handleUnloadModelStrict(allocator: std.mem.Allocator, stream: *Conn, request_
 /// clients that genuinely need the template can still get it from the
 /// model's `config.json` / `chat_template.jinja` on disk, or by rendering
 /// through `/v1/chat/completions` server-side.
+fn renderDsv4IndexedBNaxCounters(
+    allocator: std.mem.Allocator,
+    counters: mlx.Dsv4IndexedBNaxCounterSnapshot,
+) ![]u8 {
+    return std.fmt.allocPrint(allocator,
+        \\{{"general_hits":{{"available":{},"value":{d}}},"direct_pv_a_stride_hits":{{"available":{},"value":{d}}},"direct_pv_a_stride_fallbacks":{{"available":{},"value":{d}}}}}
+    , .{
+        counters.general_hits.available,
+        counters.general_hits.value,
+        counters.direct_pv_a_stride_hits.available,
+        counters.direct_pv_a_stride_hits.value,
+        counters.direct_pv_a_stride_fallbacks.available,
+        counters.direct_pv_a_stride_fallbacks.value,
+    });
+}
+
 fn renderPropsBody(
     allocator: std.mem.Allocator,
     config: *const model_mod.ModelConfig,
@@ -3586,6 +3602,7 @@ fn renderPropsBody(
     available_mem: u64,
     safe_ctx: u32,
     cache_mem: usize,
+    native_counters: mlx.Dsv4IndexedBNaxCounterSnapshot,
 ) ![]u8 {
     // `available_bytes` is free SYSTEM RAM, computed with the SAME formula the
     // model-load pre-flight uses (`metrics.getAvailableMemBytes`), so the tray's
@@ -3596,8 +3613,10 @@ fn renderPropsBody(
     // but is not using. It is a third axis again, and its absence is why #110
     // was invisible: the panel read 19.6 GB of `active_bytes` while the process
     // sat at 81.4 GB, and nothing we served named the other 61.
+    const native_counters_json = try renderDsv4IndexedBNaxCounters(allocator, native_counters);
+    defer allocator.free(native_counters_json);
     return std.fmt.allocPrint(allocator,
-        \\{{"default_generation_settings":{{"model":"{s}","n_ctx":{s}}},"total_slots":1,"model_info":{{"vocab_size":{d},"hidden_size":{d},"num_hidden_layers":{d},"num_attention_heads":{d},"num_key_value_heads":{d},"head_dim":{d},"quantization_bits":{d},"quantization_group_size":{d},"max_position_embeddings":{d}}},"memory":{{"active_bytes":{d},"peak_bytes":{d},"available_bytes":{d},"max_safe_context":{d},"cache_bytes":{d}}}}}
+        \\{{"default_generation_settings":{{"model":"{s}","n_ctx":{s}}},"total_slots":1,"model_info":{{"vocab_size":{d},"hidden_size":{d},"num_hidden_layers":{d},"num_attention_heads":{d},"num_key_value_heads":{d},"head_dim":{d},"quantization_bits":{d},"quantization_group_size":{d},"max_position_embeddings":{d}}},"memory":{{"active_bytes":{d},"peak_bytes":{d},"available_bytes":{d},"max_safe_context":{d},"cache_bytes":{d}}},"native_dispatch_counters":{{"dsv4_indexed_b_nax":{s}}}}}
     , .{
         config.model_type,        ctx_str,
         config.vocab_size,        config.hidden_size,
@@ -3608,6 +3627,7 @@ fn renderPropsBody(
         active_mem,               peak_mem,
         available_mem,            safe_ctx,
         cache_mem,
+        native_counters_json,
     });
 }
 
@@ -3660,7 +3680,17 @@ fn handleProps(allocator: std.mem.Allocator, stream: *Conn, lm: *LoadedModel) !v
     // "Free RAM" line stays in lockstep with what gates a load.
     const available_mem = metrics.getAvailableMemBytes();
 
-    const body = try renderPropsBody(allocator, config, ctx_str, active_mem, peak_mem, available_mem, safe_ctx, cache_mem);
+    const body = try renderPropsBody(
+        allocator,
+        config,
+        ctx_str,
+        active_mem,
+        peak_mem,
+        available_mem,
+        safe_ctx,
+        cache_mem,
+        mlx.dsv4IndexedBNaxCounters(),
+    );
     defer allocator.free(body);
     try sendResponse(stream, "200 OK", "application/json", body);
 }
@@ -3675,9 +3705,14 @@ fn handlePropsNoModel(allocator: std.mem.Allocator, stream: *Conn) !void {
     _ = mlx.mlx_get_active_memory(&active_mem);
     _ = mlx.mlx_get_peak_memory(&peak_mem);
     const available_mem = metrics.getAvailableMemBytes();
+    const native_counters_json = try renderDsv4IndexedBNaxCounters(
+        allocator,
+        mlx.dsv4IndexedBNaxCounters(),
+    );
+    defer allocator.free(native_counters_json);
     const body = try std.fmt.allocPrint(allocator,
-        \\{{"total_slots":1,"memory":{{"active_bytes":{d},"peak_bytes":{d},"available_bytes":{d},"max_safe_context":0}}}}
-    , .{ active_mem, peak_mem, available_mem });
+        \\{{"total_slots":1,"memory":{{"active_bytes":{d},"peak_bytes":{d},"available_bytes":{d},"max_safe_context":0}},"native_dispatch_counters":{{"dsv4_indexed_b_nax":{s}}}}}
+    , .{ active_mem, peak_mem, available_mem, native_counters_json });
     defer allocator.free(body);
     try sendResponse(stream, "200 OK", "application/json", body);
 }
@@ -5181,6 +5216,17 @@ fn handleStreamingCompletion(
         .kv_attn_fused = resolveKvAttnFused(null, prompt_ids.len, null),
         .logprobs_n = 0,
     });
+    // A final producer stop can race the next SSE write. Mark the slot before
+    // its deferred `complete` runs so connection-owned metrics classify an
+    // observed transport failure as cancellation, never success/e2e.
+    errdefer {
+        // Zig 0.17's errdefer does not capture the error value. Conn records
+        // the concrete transport failure on its reader/writer state, while
+        // model/allocation failures leave both null.
+        if (stream.write_state.err != null or stream.read_state.err != null) {
+            if (slot_handle) |slot| slot.cancel();
+        }
+    }
     var ts = StreamingTokenStream.initFromSlot(slot_handle.?, stream_mode, eos_token_ids);
     defer ts.deinit(allocator);
 
@@ -6102,6 +6148,16 @@ fn handleStreamingGeneration(
         .mrope_delta = mrope.delta,
         .kv_quant_config = kv_quant_override,
     });
+    // A final producer stop can race the next SSE write. Mark the slot before
+    // its deferred `complete` runs so connection-owned metrics classify an
+    // observed transport failure as cancellation, never success/e2e.
+    errdefer {
+        // A concrete reader/writer error is a peer transport failure; do not
+        // turn unrelated model/allocation errors into cancellation metrics.
+        if (stream.write_state.err != null or stream.read_state.err != null) {
+            if (slot_handle) |slot| slot.cancel();
+        }
+    }
     var ts = StreamingTokenStream.initFromSlot(slot_handle.?, stream_mode, eos_token_ids);
     defer ts.deinit(allocator);
 
@@ -7607,20 +7663,86 @@ fn jsonEscape(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
     errdefer result.deinit(allocator);
 
     try result.append(allocator, '"');
-    for (input) |c| {
+    var i: usize = 0;
+    while (i < input.len) {
+        const c = input[i];
         switch (c) {
-            '"' => try result.appendSlice(allocator, "\\\""),
-            '\\' => try result.appendSlice(allocator, "\\\\"),
-            '\n' => try result.appendSlice(allocator, "\\n"),
-            '\r' => try result.appendSlice(allocator, "\\r"),
-            '\t' => try result.appendSlice(allocator, "\\t"),
+            '"' => {
+                try result.appendSlice(allocator, "\\\"");
+                i += 1;
+            },
+            '\\' => {
+                try result.appendSlice(allocator, "\\\\");
+                i += 1;
+            },
+            '\n' => {
+                try result.appendSlice(allocator, "\\n");
+                i += 1;
+            },
+            '\r' => {
+                try result.appendSlice(allocator, "\\r");
+                i += 1;
+            },
+            '\t' => {
+                try result.appendSlice(allocator, "\\t");
+                i += 1;
+            },
             else => {
                 if (c < 0x20) {
                     var esc_buf: [6]u8 = undefined;
                     const s = std.fmt.bufPrint(&esc_buf, "\\u{x:0>4}", .{c}) catch unreachable;
                     try result.appendSlice(allocator, s);
-                } else {
+                    i += 1;
+                } else if (c < 0x80) {
+                    // ASCII: safe verbatim.
                     try result.append(allocator, c);
+                    i += 1;
+                } else {
+                    // Copy the multibyte sequence ONLY if it is valid UTF-8;
+                    // otherwise escape the offending byte as \u00xx.
+                    // Byte-level-BPE tokens can decode to a partial sequence
+                    // (e.g. the first two bytes of an ellipsis), and emitting
+                    // it verbatim makes the whole JSON document invalid. The
+                    // `bytes` array already carries exact byte identity, so
+                    // this only affects the human-readable `token` string.
+                    var valid = true;
+                    var second_min: u8 = 0x80;
+                    var second_max: u8 = 0xBF;
+                    const need: usize = if (c >= 0xF0) 4 else if (c >= 0xE0) 3 else 2;
+                    if (c < 0xC2 or c > 0xF4) {
+                        valid = false; // lone continuation byte or > U+10FFFF
+                    } else if (need == 2) {
+                        // C2-DF valid.
+                    } else if (need == 3) {
+                        if (c == 0xE0) second_min = 0xA0; // E0 A0..BF
+                        if (c == 0xED) second_max = 0x9F; // ED 80..9F
+                    } else {
+                        if (c == 0xF0) second_min = 0x90; // F0 90..BF
+                        if (c == 0xF4) second_max = 0x8F; // F4 80..8F
+                    }
+                    if (valid and i + need > input.len) valid = false;
+                    if (valid) {
+                        const second = input[i + 1];
+                        if (second < second_min or second > second_max) valid = false;
+                    }
+                    if (valid) {
+                        for (2..need) |off| {
+                            const cont = input[i + off];
+                            if (cont < 0x80 or cont > 0xBF) valid = false;
+                        }
+                    }
+                    if (valid) {
+                        try result.appendSlice(allocator, input[i .. i + need]);
+                        i += need;
+                    } else {
+                        // Emit the exact offending byte as \u00xx; advance one
+                        // byte so subsequent (possibly valid) bytes still parse.
+                        var esc_buf: [6]u8 = undefined;
+                        const s = std.fmt.bufPrint(&esc_buf, "\\u{x:0>4}", .{c})
+                            catch unreachable;
+                        try result.appendSlice(allocator, s);
+                        i += 1;
+                    }
                 }
             },
         }
@@ -9305,6 +9427,16 @@ fn handleAnthropicStreaming(
         .vision_embeddings = slot_ve_anth,
         .kv_quant_config = kv_quant_override,
     });
+    // A final producer stop can race the next SSE write. Mark the slot before
+    // its deferred `complete` runs so connection-owned metrics classify an
+    // observed transport failure as cancellation, never success/e2e.
+    errdefer {
+        // A concrete reader/writer error is a peer transport failure; do not
+        // turn unrelated model/allocation errors into cancellation metrics.
+        if (stream.write_state.err != null or stream.read_state.err != null) {
+            if (slot_handle) |slot| slot.cancel();
+        }
+    }
     var ts = StreamingTokenStream.initFromSlot(slot_handle.?, stream_mode, eos_token_ids);
     defer ts.deinit(allocator);
 
@@ -10609,6 +10741,18 @@ fn handleResponses(
             .logprobs_n = 0,
             .kv_quant_config = kv_quant_override,
         });
+        // A final producer stop can race the next SSE write. Mark the slot
+        // before its deferred `complete` runs so connection-owned metrics
+        // classify an observed transport failure as cancellation, never
+        // success/e2e.
+        errdefer {
+            // A concrete reader/writer error is a peer transport failure; do
+            // not turn unrelated model/allocation errors into cancellation
+            // metrics.
+            if (stream.write_state.err != null or stream.read_state.err != null) {
+                if (slot_handle) |slot| slot.cancel();
+            }
+        }
         var ts = StreamingTokenStream.initFromSlot(slot_handle.?, stream_mode, eos_slice);
         defer ts.deinit(allocator);
 
@@ -12275,6 +12419,35 @@ test "jsonEscape empty string" {
     try testing.expectEqualStrings("\"\"", result);
 }
 
+test "jsonEscape keeps valid multibyte utf8 verbatim" {
+    const allocator = testing.allocator;
+    // U+2026 HORIZONTAL ELLIPSIS = E2 80 A6 ; U+1F600 = F0 9F 98 80
+    const input = &[_]u8{ 0xE2, 0x80, 0xA6, 0xF0, 0x9F, 0x98, 0x80 };
+    const result = try jsonEscape(allocator, input);
+    defer allocator.free(result);
+    try testing.expectEqualStrings("\"\xE2\x80\xA6\xF0\x9F\x98\x80\"", result);
+}
+
+test "jsonEscape escapes truncated multibyte sequence" {
+    const allocator = testing.allocator;
+    // Byte-level-BPE token = first two bytes of an ellipsis (partial).
+    const input = &[_]u8{ 0xE2, 0x80 };
+    const result = try jsonEscape(allocator, input);
+    defer allocator.free(result);
+    // E2 has no valid continuation here -> \u00e2, then 80 is a lone
+    // continuation byte -> \u0080.
+    try testing.expectEqualStrings("\"\\u00e2\\u0080\"", result);
+}
+
+test "jsonEscape escapes overlong and lone continuation bytes" {
+    const allocator = testing.allocator;
+    // Overlong 2-byte start C0 and lone continuation byte 80.
+    const input = &[_]u8{ 0xC0, 0x80 };
+    const result = try jsonEscape(allocator, input);
+    defer allocator.free(result);
+    try testing.expectEqualStrings("\"\\u00c0\\u0080\"", result);
+}
+
 test "utf8TrailingIncomplete complete ASCII" {
     try testing.expectEqual(@as(usize, 0), utf8TrailingIncomplete("hello"));
 }
@@ -12923,7 +13096,12 @@ test "renderPropsBody omits chat_template" {
     config.max_position_embeddings = 8192;
     config.model_type = "gemma4";
 
-    const body = try renderPropsBody(testing.allocator, &config, "4096", 1234, 5678, 9_000_000_000, 16384, 4321);
+    const unavailable_counters = mlx.Dsv4IndexedBNaxCounterSnapshot{
+        .general_hits = .{ .available = false, .value = 0 },
+        .direct_pv_a_stride_hits = .{ .available = false, .value = 0 },
+        .direct_pv_a_stride_fallbacks = .{ .available = false, .value = 0 },
+    };
+    const body = try renderPropsBody(testing.allocator, &config, "4096", 1234, 5678, 9_000_000_000, 16384, 4321, unavailable_counters);
     defer testing.allocator.free(body);
 
     try testing.expect(std.mem.indexOf(u8, body, "\"chat_template\"") == null);
@@ -12942,7 +13120,12 @@ test "renderPropsBody keeps fields the Swift app + integration tests rely on" {
     config.quant_group_size = 64;
     config.max_position_embeddings = 8192;
 
-    const body = try renderPropsBody(testing.allocator, &config, "4096", 1234, 5678, 9_000_000_000, 16384, 4321);
+    const counters = mlx.Dsv4IndexedBNaxCounterSnapshot{
+        .general_hits = .{ .available = true, .value = 101 },
+        .direct_pv_a_stride_hits = .{ .available = true, .value = 37 },
+        .direct_pv_a_stride_fallbacks = .{ .available = false, .value = 0 },
+    };
+    const body = try renderPropsBody(testing.allocator, &config, "4096", 1234, 5678, 9_000_000_000, 16384, 4321, counters);
     defer testing.allocator.free(body);
 
     // Hit every field a known consumer reads.
@@ -12958,6 +13141,10 @@ test "renderPropsBody keeps fields the Swift app + integration tests rely on" {
     // The missing 61 GB was MLX's reclaimable buffer pool, which nothing we
     // expose reported — so the bug was invisible from every surface.
     try testing.expect(std.mem.indexOf(u8, body, "\"cache_bytes\":4321") != null); // Swift fetchProps
+    try testing.expect(std.mem.indexOf(u8, body, "\"native_dispatch_counters\"") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "\"general_hits\":{\"available\":true,\"value\":101}") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "\"direct_pv_a_stride_hits\":{\"available\":true,\"value\":37}") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "\"direct_pv_a_stride_fallbacks\":{\"available\":false,\"value\":0}") != null);
 }
 
 test "mlxCacheLimitBytes: RAM-proportional cap, 2 GB floor, 8 GB ceiling" {
