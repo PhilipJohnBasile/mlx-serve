@@ -1,0 +1,305 @@
+{
+  "schema": "mlx-serve.dsv4-three-arm-behavior-v1",
+  "schema_version": 1,
+  "arms": {
+    "oracle": {
+      "arm": "oracle",
+      "endpoint": "OpenRouter coreweave/fp8 (frozen oracle, no re-spend)",
+      "model": "deepseek/deepseek-v4-flash-0731",
+      "published_comparison_found": true,
+      "cases": {
+        "smoke": {
+          "content": "WINDOW",
+          "content_sha256": "2480270a05636e58c46f923aae9a125cc9bd241e95ac869979cc934c49e92886",
+          "token_count": 1,
+          "top_tokens": null,
+          "published_verdict": {
+            "kind": "exact_utf8_bytes",
+            "passed": true
+          }
+        },
+        "exact_copy": {
+          "content": "Ax7_Q!m2",
+          "content_sha256": "1c4cd215805a72d56bd5cc20684afa5987bc360dba443d3b0ba9439270883ead",
+          "token_count": 1,
+          "top_tokens": null,
+          "published_verdict": {
+            "kind": "exact_utf8_bytes",
+            "passed": true
+          }
+        },
+        "json": {
+          "content": "{\"sum\": 42, \"prime\": true}",
+          "content_sha256": "a892cca3d7aee40dd1c003b4bf3aeced86bbdecd5944bc61433abd65a47874eb",
+          "token_count": 4,
+          "top_tokens": null,
+          "published_verdict": {
+            "kind": "parsed_json_semantic_equality",
+            "passed": true
+          }
+        },
+        "multilingual": {
+          "content": "El hielo flota en el agua porque es menos denso que el agua l\u00edquida, debido a que sus mol\u00e9culas se ordenan en una estructura cristalina que ocupa m\u00e1s espacio.",
+          "content_sha256": "d744d877f2fb15a4d6073e518cbc69918563d928e42df7449cbefa8a0d92a94e",
+          "token_count": 29,
+          "top_tokens": null,
+          "published_verdict": {
+            "kind": "local_contract_only",
+            "passed": true,
+            "remote_text_equality_assessed": false
+          }
+        }
+      }
+    },
+    "direct_mlx_serve": {
+      "arm": "direct_mlx_serve",
+      "endpoint": "http://127.0.0.1:8000",
+      "model": "DeepSeek-V4-Flash-0731-target-only-gold-view-20260811-v1",
+      "cases": {
+        "smoke": {
+          "content": "WINDOW",
+          "content_sha256": "2480270a05636e58c46f923aae9a125cc9bd241e95ac869979cc934c49e92886",
+          "token_count": 1,
+          "logprobs_entries": 3,
+          "top_tokens": [
+            "W",
+            "IND",
+            "OW"
+          ],
+          "latency_s": 2.227
+        },
+        "exact_copy": {
+          "content": "Ax7_Q!m2",
+          "content_sha256": "1c4cd215805a72d56bd5cc20684afa5987bc360dba443d3b0ba9439270883ead",
+          "token_count": 1,
+          "logprobs_entries": 6,
+          "top_tokens": [
+            "Ax",
+            "7",
+            "_Q"
+          ],
+          "latency_s": 0.451
+        },
+        "json": {
+          "content": "{\"sum\":42,\"prime\":true}",
+          "content_sha256": "a0b6c6ec46b0ea14d94f038c002f94328de3d8815733bb299077b0474d593a74",
+          "token_count": 1,
+          "logprobs_entries": 9,
+          "top_tokens": [
+            "{\"",
+            "sum",
+            "\":"
+          ],
+          "latency_s": 0.569
+        },
+        "multilingual": {
+          "content": "El hielo flota en el agua porque es menos denso que el agua l\u00edquida, ya que sus mol\u00e9culas se expanden al congelarse y forman una estructura cristalina que ocupa m\u00e1s volumen por unidad de masa.",
+          "content_sha256": "52145a7a8184bb469baffa5953589eb2d8658ebef96e7054e5c9a494026f32f2",
+          "token_count": 35,
+          "logprobs_entries": 50,
+          "top_tokens": [
+            "El",
+            " h",
+            "iel"
+          ],
+          "latency_s": 1.881
+        }
+      }
+    },
+    "mtplx": {
+      "arm": "mtplx_routed",
+      "endpoint": "http://127.0.0.1:8000",
+      "model": "DeepSeek-V4-Flash-0731-target-only-gold-view-20260811-v1",
+      "cases": {
+        "smoke": {
+          "content": "WINDOW",
+          "content_sha256": "2480270a05636e58c46f923aae9a125cc9bd241e95ac869979cc934c49e92886",
+          "token_count": 1,
+          "logprobs_entries": 3,
+          "top_tokens": [
+            "W",
+            "IND",
+            "OW"
+          ],
+          "latency_s": 0.324
+        },
+        "exact_copy": {
+          "content": "Ax7_Q!m2",
+          "content_sha256": "1c4cd215805a72d56bd5cc20684afa5987bc360dba443d3b0ba9439270883ead",
+          "token_count": 1,
+          "logprobs_entries": 6,
+          "top_tokens": [
+            "Ax",
+            "7",
+            "_Q"
+          ],
+          "latency_s": 0.45
+        },
+        "json": {
+          "content": "{\"sum\":42,\"prime\":true}",
+          "content_sha256": "a0b6c6ec46b0ea14d94f038c002f94328de3d8815733bb299077b0474d593a74",
+          "token_count": 1,
+          "logprobs_entries": 9,
+          "top_tokens": [
+            "{\"",
+            "sum",
+            "\":"
+          ],
+          "latency_s": 0.571
+        },
+        "multilingual": {
+          "content": "El hielo flota en el agua porque es menos denso que el agua l\u00edquida, ya que sus mol\u00e9culas se expanden al congelarse y forman una estructura cristalina que ocupa m\u00e1s volumen por unidad de masa.",
+          "content_sha256": "52145a7a8184bb469baffa5953589eb2d8658ebef96e7054e5c9a494026f32f2",
+          "token_count": 35,
+          "logprobs_entries": 50,
+          "top_tokens": [
+            "El",
+            " h",
+            "iel"
+          ],
+          "latency_s": 1.898
+        }
+      }
+    }
+  },
+  "comparisons": [
+    {
+      "arm": "remote_vs_direct",
+      "cases": {
+        "smoke": {
+          "content_equal": true,
+          "content_sha_equal": true,
+          "whitespace_normalized_equal": true,
+          "a_sha": "2480270a0563",
+          "b_sha": "2480270a0563",
+          "published_oracle_verdict": {
+            "kind": "exact_utf8_bytes",
+            "passed": true
+          }
+        },
+        "exact_copy": {
+          "content_equal": true,
+          "content_sha_equal": true,
+          "whitespace_normalized_equal": true,
+          "a_sha": "1c4cd215805a",
+          "b_sha": "1c4cd215805a",
+          "published_oracle_verdict": {
+            "kind": "exact_utf8_bytes",
+            "passed": true
+          }
+        },
+        "json": {
+          "content_equal": false,
+          "content_sha_equal": false,
+          "whitespace_normalized_equal": true,
+          "a_sha": "a892cca3d7ae",
+          "b_sha": "a0b6c6ec46b0",
+          "published_oracle_verdict": {
+            "kind": "parsed_json_semantic_equality",
+            "passed": true
+          }
+        },
+        "multilingual": {
+          "content_equal": false,
+          "content_sha_equal": false,
+          "whitespace_normalized_equal": false,
+          "a_sha": "d744d877f2fb",
+          "b_sha": "52145a7a8184",
+          "published_oracle_verdict": {
+            "kind": "local_contract_only",
+            "passed": true,
+            "remote_text_equality_assessed": false
+          }
+        }
+      }
+    },
+    {
+      "arm": "remote_vs_mtplx",
+      "cases": {
+        "smoke": {
+          "content_equal": true,
+          "content_sha_equal": true,
+          "whitespace_normalized_equal": true,
+          "a_sha": "2480270a0563",
+          "b_sha": "2480270a0563",
+          "published_oracle_verdict": {
+            "kind": "exact_utf8_bytes",
+            "passed": true
+          }
+        },
+        "exact_copy": {
+          "content_equal": true,
+          "content_sha_equal": true,
+          "whitespace_normalized_equal": true,
+          "a_sha": "1c4cd215805a",
+          "b_sha": "1c4cd215805a",
+          "published_oracle_verdict": {
+            "kind": "exact_utf8_bytes",
+            "passed": true
+          }
+        },
+        "json": {
+          "content_equal": false,
+          "content_sha_equal": false,
+          "whitespace_normalized_equal": true,
+          "a_sha": "a892cca3d7ae",
+          "b_sha": "a0b6c6ec46b0",
+          "published_oracle_verdict": {
+            "kind": "parsed_json_semantic_equality",
+            "passed": true
+          }
+        },
+        "multilingual": {
+          "content_equal": false,
+          "content_sha_equal": false,
+          "whitespace_normalized_equal": false,
+          "a_sha": "d744d877f2fb",
+          "b_sha": "52145a7a8184",
+          "published_oracle_verdict": {
+            "kind": "local_contract_only",
+            "passed": true,
+            "remote_text_equality_assessed": false
+          }
+        }
+      }
+    },
+    {
+      "arm": "direct_vs_mtplx",
+      "cases": {
+        "smoke": {
+          "content_equal": true,
+          "content_sha_equal": true,
+          "whitespace_normalized_equal": true,
+          "a_sha": "2480270a0563",
+          "b_sha": "2480270a0563",
+          "published_oracle_verdict": null
+        },
+        "exact_copy": {
+          "content_equal": true,
+          "content_sha_equal": true,
+          "whitespace_normalized_equal": true,
+          "a_sha": "1c4cd215805a",
+          "b_sha": "1c4cd215805a",
+          "published_oracle_verdict": null
+        },
+        "json": {
+          "content_equal": true,
+          "content_sha_equal": true,
+          "whitespace_normalized_equal": true,
+          "a_sha": "a0b6c6ec46b0",
+          "b_sha": "a0b6c6ec46b0",
+          "published_oracle_verdict": null
+        },
+        "multilingual": {
+          "content_equal": true,
+          "content_sha_equal": true,
+          "whitespace_normalized_equal": true,
+          "a_sha": "52145a7a8184",
+          "b_sha": "52145a7a8184",
+          "published_oracle_verdict": null
+        }
+      }
+    }
+  ],
+  "note": "Local latency is reported per arm but is NOT comparable to networked OpenRouter latency; behavior (content + top-token logprobs) is the cross-arm signal. MTPLX delegates to the same mlx-serve engine, so direct_vs_mtplx is an identical-engine routing check."
+}

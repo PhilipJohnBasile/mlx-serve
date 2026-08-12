@@ -60,20 +60,28 @@ We ran the same four public, deterministic prompts against this artifact and
 the same DeepSeek-V4-Flash-0731 model served by OpenRouter's pinned CoreWeave
 FP8 endpoint. Provider fallbacks were disabled. This is a small behavioral
 regression gate, not a reproduction of DeepSeek's agent benchmarks and not a
-full-logit or source-exactness claim.
+full-logit or source-exactness claim. The comparison was run through **both**
+local paths (direct `mlx-serve` and the MTPLX-routed backend) against the same
+frozen OpenRouter reference; see
+`receipts/dsv4/2026-08-11-three-arm-20260812T024136Z.json`.
 
-| Public case | OpenRouter original | This MLX artifact | Comparison |
-| --- | ---: | ---: | --- |
-| exact single-token instruction | pass | pass | byte-identical output |
-| punctuation/case copy | pass | pass | byte-identical output |
-| constrained JSON | pass | pass | parsed JSON objects equal |
-| one-sentence Spanish explanation | pass | pass | both valid; first 20 generated tokens matched |
+| Public case | OpenRouter original | Direct mlx-serve | MTPLX-routed | Comparison |
+| --- | ---: | ---: | ---: | --- |
+| exact single-token instruction | pass | pass | pass | byte-identical output |
+| punctuation/case copy | pass | pass | pass | byte-identical output |
+| constrained JSON | pass | pass | pass | parsed JSON objects equal (whitespace-only difference) |
+| one-sentence Spanish explanation | pass | pass | pass | both valid; semantically equivalent wording |
 
-The remote four-case run cost `$0.00003432`. Timing was not sealed into this
-comparison receipt, so the comparison supports no throughput claim. The
-original first-party DeepSeek endpoint was unavailable under the test key's
-OpenRouter data-policy settings; the remote reference was the exact model slug
-on a pinned CoreWeave FP8 endpoint with no fallback.
+Direct `mlx-serve` and the MTPLX backend returned byte-identical output on all
+four cases (they delegate to the same engine), so the table collapses to one
+local column for behavior.
+
+The original four-case remote run cost `$0.00003432` and is reused here
+(frozen oracle, no re-spend; local arms were re-run on 2026-08-12). Timing was
+not sealed into this comparison receipt and network latency is never treated as
+model speed. The original first-party DeepSeek endpoint was unavailable under
+the test key's OpenRouter data-policy settings; the remote reference was the
+exact model slug on a pinned CoreWeave FP8 endpoint with no fallback.
 
 Broader public-task evaluation remains pending. In particular, this artifact
 does not claim the upstream Terminal Bench, NL2Repo, Cybergym, DeepSWE,
@@ -95,8 +103,8 @@ mlx-serve \
 ```
 
 Experimental MTPLX support is available via the `codex/deepseek-v4-mlxserve-backend`
-branch (backend fix for measured streaming: `5df7f0c`; backend initial release:
-[`0bbe062e3a25a5de8cb31f3e8948c76516ff8404`](https://github.com/PhilipJohnBasile/MTPLX/commit/0bbe062e3a25a5de8cb31f3e8948c76516ff8404)).
+branch (backend release + gate/streaming fixes: `14413c2`; backend initial
+release: [`0bbe062e3a25a5de8cb31f3e8948c76516ff8404`](https://github.com/PhilipJohnBasile/MTPLX/commit/0bbe062e3a25a5de8cb31f3e8948c76516ff8404)).
 It delegates to the companion native `mlx-serve` DeepSeek-V4 runtime and keeps
 this target-only artifact on the AR path. The backend sets `MLX_SERVE_WIRED=fit`
 for the child by default (override with `MTPLX_DSV4_WIRED`):

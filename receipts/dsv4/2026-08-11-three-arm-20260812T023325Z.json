@@ -1,0 +1,234 @@
+{
+  "schema": "mlx-serve.dsv4-three-arm-behavior-v1",
+  "schema_version": 1,
+  "arms": {
+    "oracle": {
+      "endpoint": "OpenRouter coreweave/fp8 (frozen oracle, no re-spend)",
+      "model": "deepseek/deepseek-v4-flash-0731",
+      "cases": {
+        "smoke": {
+          "content": "{'cancelled': False, 'created_at': '2026-08-11T19:33:31.365Z', 'data_region': 'global', 'finish_reason': 'stop', 'generation_time': 293, 'id': 'gen-1786476811-xM8pk3VQfdBlY6TdfYrl', 'latency': 245, 'model': 'deepseek/deepseek-v4-flash-20260731', 'native_finish_reason': 'stop', 'native_tokens_cached': 0, 'native_tokens_completion': 4, 'native_tokens_prompt': 25, 'native_tokens_reasoning': 0, 'provider_name': 'CoreWeave', 'service_tier': None, 'streamed': True, 'tokens_completion': 2, 'tokens_prompt': 29, 'total_cost': 4.37e-06, 'upstream_inference_cost': 0}",
+          "content_sha256": "99d6d6ca65a40a5a3983e8c116ff9ab21f6014e69f32750397e589fada884236",
+          "token_count": 40,
+          "top_tokens": null
+        },
+        "exact_copy": {
+          "content": "{'cancelled': False, 'created_at': '2026-08-11T19:33:40.116Z', 'data_region': 'global', 'finish_reason': 'stop', 'generation_time': 265, 'id': 'gen-1786476820-6F5TzMWvg9tYJAADkeuZ', 'latency': 234, 'model': 'deepseek/deepseek-v4-flash-20260731', 'native_finish_reason': 'stop', 'native_tokens_cached': 0, 'native_tokens_completion': 7, 'native_tokens_prompt': 32, 'native_tokens_reasoning': 0, 'provider_name': 'CoreWeave', 'service_tier': None, 'streamed': True, 'tokens_completion': 2, 'tokens_prompt': 34, 'total_cost': 6.12e-06, 'upstream_inference_cost': 0}",
+          "content_sha256": "d316516c12c72be7ac9b2c5f4249667da559a52d4c752667102713d274d8023c",
+          "token_count": 40,
+          "top_tokens": null
+        },
+        "json": {
+          "content": "{'cancelled': False, 'created_at': '2026-08-11T19:33:53.477Z', 'data_region': 'global', 'finish_reason': 'stop', 'generation_time': 324, 'id': 'gen-1786476833-54k6ePs8UwHIndfpGLvW', 'latency': 260, 'model': 'deepseek/deepseek-v4-flash-20260731', 'native_finish_reason': 'stop', 'native_tokens_cached': 0, 'native_tokens_completion': 12, 'native_tokens_prompt': 35, 'native_tokens_reasoning': 0, 'provider_name': 'CoreWeave', 'service_tier': None, 'streamed': True, 'tokens_completion': 7, 'tokens_prompt': 29, 'total_cost': 7.91e-06, 'upstream_inference_cost': 0}",
+          "content_sha256": "c39ac9def822009c205495cbf43f68ff14795ba8a40bf909f9241744bd355501",
+          "token_count": 40,
+          "top_tokens": null
+        },
+        "multilingual": {
+          "content": "{'cancelled': False, 'created_at': '2026-08-11T19:34:06.987Z', 'data_region': 'global', 'finish_reason': 'stop', 'generation_time': 852, 'id': 'gen-1786476846-AYjeBW1aSkJHuPswlxj2', 'latency': 224, 'model': 'deepseek/deepseek-v4-flash-20260731', 'native_finish_reason': 'stop', 'native_tokens_cached': 0, 'native_tokens_completion': 42, 'native_tokens_prompt': 32, 'native_tokens_reasoning': 0, 'provider_name': 'CoreWeave', 'service_tier': None, 'streamed': True, 'tokens_completion': 41, 'tokens_prompt': 32, 'total_cost': 1.592e-05, 'upstream_inference_cost': 0}",
+          "content_sha256": "e3bb25285aa5322374268232b38527be77cdf26c259beec762f80e7b6aa00b29",
+          "token_count": 40,
+          "top_tokens": null
+        }
+      }
+    },
+    "direct_mlx_serve": {
+      "endpoint": "http://127.0.0.1:11234",
+      "model": "DeepSeek-V4-Flash-0731-target-only-gold-view-20260811-v1",
+      "cases": {
+        "smoke": {
+          "content": "WINDOW",
+          "content_sha256": "2480270a05636e58c46f923aae9a125cc9bd241e95ac869979cc934c49e92886",
+          "token_count": 1,
+          "logprobs_entries": 3,
+          "top_tokens": [
+            "W",
+            "IND",
+            "OW"
+          ],
+          "latency_s": 6.394
+        },
+        "exact_copy": {
+          "content": "Ax7_Q!m2",
+          "content_sha256": "1c4cd215805a72d56bd5cc20684afa5987bc360dba443d3b0ba9439270883ead",
+          "token_count": 1,
+          "logprobs_entries": 6,
+          "top_tokens": [
+            "Ax",
+            "7",
+            "_Q"
+          ],
+          "latency_s": 0.533
+        },
+        "json": {
+          "content": "{\"sum\":42,\"prime\":true}",
+          "content_sha256": "a0b6c6ec46b0ea14d94f038c002f94328de3d8815733bb299077b0474d593a74",
+          "token_count": 1,
+          "logprobs_entries": 9,
+          "top_tokens": [
+            "{\"",
+            "sum",
+            "\":"
+          ],
+          "latency_s": 0.647
+        },
+        "multilingual": {
+          "content": "El hielo flota en el agua porque es menos denso que el agua l\u00edquida, ya que sus mol\u00e9culas se expanden al congelarse y forman una estructura cristalina que ocupa m\u00e1s volumen por unidad de masa.",
+          "content_sha256": "52145a7a8184bb469baffa5953589eb2d8658ebef96e7054e5c9a494026f32f2",
+          "token_count": 35,
+          "logprobs_entries": 50,
+          "top_tokens": [
+            "El",
+            " h",
+            "iel"
+          ],
+          "latency_s": 1.853
+        }
+      }
+    },
+    "mtplx": {
+      "endpoint": "http://127.0.0.1:11234",
+      "model": "DeepSeek-V4-Flash-0731-target-only-gold-view-20260811-v1",
+      "cases": {
+        "smoke": {
+          "content": "WINDOW",
+          "content_sha256": "2480270a05636e58c46f923aae9a125cc9bd241e95ac869979cc934c49e92886",
+          "token_count": 1,
+          "logprobs_entries": 3,
+          "top_tokens": [
+            "W",
+            "IND",
+            "OW"
+          ],
+          "latency_s": 0.318
+        },
+        "exact_copy": {
+          "content": "Ax7_Q!m2",
+          "content_sha256": "1c4cd215805a72d56bd5cc20684afa5987bc360dba443d3b0ba9439270883ead",
+          "token_count": 1,
+          "logprobs_entries": 6,
+          "top_tokens": [
+            "Ax",
+            "7",
+            "_Q"
+          ],
+          "latency_s": 0.442
+        },
+        "json": {
+          "content": "{\"sum\":42,\"prime\":true}",
+          "content_sha256": "a0b6c6ec46b0ea14d94f038c002f94328de3d8815733bb299077b0474d593a74",
+          "token_count": 1,
+          "logprobs_entries": 9,
+          "top_tokens": [
+            "{\"",
+            "sum",
+            "\":"
+          ],
+          "latency_s": 0.561
+        },
+        "multilingual": {
+          "content": "El hielo flota en el agua porque es menos denso que el agua l\u00edquida, ya que sus mol\u00e9culas se expanden al congelarse y forman una estructura cristalina que ocupa m\u00e1s volumen por unidad de masa.",
+          "content_sha256": "52145a7a8184bb469baffa5953589eb2d8658ebef96e7054e5c9a494026f32f2",
+          "token_count": 35,
+          "logprobs_entries": 50,
+          "top_tokens": [
+            "El",
+            " h",
+            "iel"
+          ],
+          "latency_s": 1.861
+        }
+      }
+    }
+  },
+  "comparisons": [
+    {
+      "arm": "remote_vs_direct",
+      "cases": {
+        "smoke": {
+          "content_equal": false,
+          "content_sha_equal": false,
+          "a_sha": "99d6d6ca65a4",
+          "b_sha": "2480270a0563"
+        },
+        "exact_copy": {
+          "content_equal": false,
+          "content_sha_equal": false,
+          "a_sha": "d316516c12c7",
+          "b_sha": "1c4cd215805a"
+        },
+        "json": {
+          "content_equal": false,
+          "content_sha_equal": false,
+          "a_sha": "c39ac9def822",
+          "b_sha": "a0b6c6ec46b0"
+        },
+        "multilingual": {
+          "content_equal": false,
+          "content_sha_equal": false,
+          "a_sha": "e3bb25285aa5",
+          "b_sha": "52145a7a8184"
+        }
+      }
+    },
+    {
+      "arm": "remote_vs_mtplx",
+      "cases": {
+        "smoke": {
+          "content_equal": false,
+          "content_sha_equal": false,
+          "a_sha": "99d6d6ca65a4",
+          "b_sha": "2480270a0563"
+        },
+        "exact_copy": {
+          "content_equal": false,
+          "content_sha_equal": false,
+          "a_sha": "d316516c12c7",
+          "b_sha": "1c4cd215805a"
+        },
+        "json": {
+          "content_equal": false,
+          "content_sha_equal": false,
+          "a_sha": "c39ac9def822",
+          "b_sha": "a0b6c6ec46b0"
+        },
+        "multilingual": {
+          "content_equal": false,
+          "content_sha_equal": false,
+          "a_sha": "e3bb25285aa5",
+          "b_sha": "52145a7a8184"
+        }
+      }
+    },
+    {
+      "arm": "direct_vs_mtplx",
+      "cases": {
+        "smoke": {
+          "content_equal": true,
+          "content_sha_equal": true,
+          "a_sha": "2480270a0563",
+          "b_sha": "2480270a0563"
+        },
+        "exact_copy": {
+          "content_equal": true,
+          "content_sha_equal": true,
+          "a_sha": "1c4cd215805a",
+          "b_sha": "1c4cd215805a"
+        },
+        "json": {
+          "content_equal": true,
+          "content_sha_equal": true,
+          "a_sha": "a0b6c6ec46b0",
+          "b_sha": "a0b6c6ec46b0"
+        },
+        "multilingual": {
+          "content_equal": true,
+          "content_sha_equal": true,
+          "a_sha": "52145a7a8184",
+          "b_sha": "52145a7a8184"
+        }
+      }
+    }
+  ],
+  "note": "Local latency is reported per arm but is NOT comparable to networked OpenRouter latency; behavior (content + top-token logprobs) is the cross-arm signal. MTPLX delegates to the same mlx-serve engine, so direct_vs_mtplx is an identical-engine routing check."
+}
