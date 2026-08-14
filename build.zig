@@ -128,7 +128,7 @@ pub fn build(b: *std.Build) void {
     mod.addIncludePath(b.path("lib/xatlas"));
 
     // ds4 inference engine for DSV4-Flash (Metal backend, macOS only). See
-    // `lib/ds4/` submodule pinned at 613e9b2 and `src/arch/ds4.zig`. Kernel
+    // `lib/ds4/` submodule pinned at 69b3762 and `src/arch/ds4.zig`. Kernel
     // sources are embedded via `lib/ds4_metal_sources.zig` and extracted at
     // runtime to ~/.mlx-serve/ds4-metal/<hash>/.
     addDs4Sources(b, mod);
@@ -453,9 +453,9 @@ fn addDs4Sources(b: *std.Build, module: *std.Build.Module) void {
     };
     module.addCSourceFile(.{ .file = b.path("lib/ds4/ds4.c"), .flags = c_flags });
     // ds4.c #includes ds4_distributed.h; the engine/session path links its impl.
-    // ds4_gpu.h is implemented in ds4_metal.m; ds4_kvstore/web/help/agent.c and
-    // ds4_gpu_args.c are CLI/server-only and not part of the library path
-    // mlx-serve embeds (upstream Makefile CORE_OBJS is the authority).
+    // ds4_gpu.h is implemented in ds4_metal.m. The separate CLI/server/eval/
+    // agent support translation units are not part of the library path
+    // mlx-serve embeds; upstream Makefile CORE_OBJS is the authority.
     module.addCSourceFile(.{ .file = b.path("lib/ds4/ds4_distributed.c"), .flags = c_flags });
     // SSD weight-streaming (issue #39): ds4_ssd.c is a standalone TU (#includes
     // only ds4_ssd.h) implementing the streaming expert cache the engine_options
