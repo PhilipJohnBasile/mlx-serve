@@ -7,12 +7,18 @@ benchmark or a claim of parity with the original FP8 model.
 
 ## Frozen inputs
 
-- `mlx-serve` base: `d9c7986de5c8be9dc02640e7c017bdfd8b1da483`
+- Historical smoke lineage base: `d9c7986de5c8be9dc02640e7c017bdfd8b1da483`
+- Current direct parent base: `603b4c865d0682c8de96e6cbbf804e01fce6d632`
+- Frozen parent-candidate `HEAD`:
+  `3cb52fe62299b0659972064c5f87682789b10d50` (committed and published on
+  `codex/dsv4-dwarfstar-refresh-20260813`; only the final five-file ds4
+  repin, receipt, and comment delta is deliberately uncommitted for review)
 - DwarfStar base: `84cc882352757baf628a1776badf7cc54d584e28`
-- Published DwarfStar integration commit:
-  `0c654079b8fd78aa3440107b5db7158c115cb93e` on
-  `PhilipJohnBasile/ds4:codex/dsv4-ssd-dspark-m5`; upstream draft PR:
-  `https://github.com/antirez/ds4/pull/798`
+- Historical first published DwarfStar integration commit:
+  `0c654079b8fd78aa3440107b5db7158c115cb93e`. The current reviewed pin is
+  `69b376268f52e44cc42077efcecfd7c4990ab6ae` on
+  `PhilipJohnBasile/ds4:codex/dsv4-ssd-dspark-m5`; upstream PR
+  `https://github.com/antirez/ds4/pull/798` is mergeable and ready for review.
 - DwarfStar local integration patch: quality-mode SSD decode uses bounded
   full-layer maps instead of the compact selected-expert static map; an exact
   DSpark support GGUF can use a separate persistent read-only Metal view while
@@ -84,27 +90,75 @@ matching embedded sources.
   warnings.
 - The pre-publication ReleaseFast wrapper build reported
   `ds4 84cc88235275-dirty`, proving a local dirty checkout is no longer
-  misreported as unknown. After publishing the nested patch, pinning it from
-  the parent, and rebasing the parent onto upstream `603b4c8`, a clean
-  ReleaseFast build reported `ds4 0c654079b8fd`. Final binary SHA-256:
+  misreported as unknown. The first published nested candidate then reported
+  `ds4 0c654079b8fd`; its historical binary SHA-256 was
   `6a86d136e562bd430765f6c76483758772fbcadc6240db4ade54f16d6e39f86f`
   (11,205,144 bytes).
+- After the admission/lifecycle hardening was published and repinned, the
+  clean-submodule ReleaseFast wrapper build reported `ds4 69b376268f52`. Its
+  binary SHA-256 is
+  `db90948aa1f12d511bec24af610e86764bbf50732325b9ed1b39ff8f66968063`
+  (11,238,376 bytes). The DS4 FFI layout guard is among the 14 source-test
+  names selected by the focused `ds4` filter, which passed in Debug,
+  ReleaseSafe, and ReleaseFast. The historical full 1,617-test run recorded
+  1,493 passes, 122 skips, and two unrelated GPU numerical failures in the
+  DSV4 fused decode-chain and MiniMax-H3 sparse-attention tests; those failures
+  are retained, not counted as post-repin passing evidence.
 
 No model, GPU inference, public endpoint, or network benchmark was run during
 the post-review repairs recorded above. The measurements below are explicitly
 historical evidence from earlier work, not post-review validation.
 
+## Serialized post-review M5 target-only gate
+
+After the frozen five-file parent candidate passed independent review, one
+exclusive local functional smoke was run against the exact reviewed
+ReleaseFast binary and mixed-0731 target. This was a target-only SSD-streaming
+gate, not a benchmark and not DSpark evidence.
+
+- Binary SHA-256: `db90948aa1f12d511bec24af610e86764bbf50732325b9ed1b39ff8f66968063`
+  (11,238,376 bytes; `ds4 69b376268f52`).
+- Target path:
+  `/Users/pjb/git/ds4/gguf/DeepSeek-V4-Flash-Layers37-42Q4KExperts-OtherExpertLayersIQ2XXSGateUp-Q2KDown-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-fixed-0731.gguf`
+  (97,591,747,456 bytes). Its receipt-bound SHA-256 remains
+  `659e22fbd01c9e13ea37a57c8d9c41e0a8819dffa3473d3c5286ee44b2d3398f`;
+  this gate checked the exact size/path but did not reread 97.6 GB solely to
+  recompute that historical digest.
+- Launch policy: `--ssd-streaming --no-ds4-mtp --ctx-size 8192 --temp 0`,
+  loopback-only on port 18073. System memory was 90% free and no other MLX,
+  oMLX, MTPLX, llama, DwarfStar, test, or Zig-build workload was active.
+- Admission: PASS. The wrapper logged `has_mtp=false`, skipped full model
+  residency and warmup, selected the bounded 8.00 GiB SSD expert budget, and
+  reported 9.47 GiB planned memory (0.42 GiB KV, 0.06 GiB buffers, 0.99 GiB
+  resident model, 4.62 GiB dynamic cache, 3.38 GiB prefill reserve).
+- Public OpenAI-compatible request: PASS. For “Reply with exactly the integer
+  that is one more than 10. No punctuation.” with `max_tokens=1`, the server
+  returned exactly `11` (20 prompt + one completion token). The log reported
+  4.775 seconds total and 5.0 prompt tok/s; a one-token length-limited response
+  is not a meaningful decode-throughput measurement.
+- Teardown: PASS. SIGINT produced a graceful shutdown, port 18073 closed, no
+  `mlx-serve`/DwarfStar process remained, and system memory reported 91% free.
+- Post-run identity: the binary SHA-256 remained exact and the pre-receipt-edit
+  five-file diff remained
+  `38491d871ee7490670dc39e45d49851d10b0aad7d9ddb86651ee61e4f5a6f6d5`.
+
+This closes the required post-review real-model target-only SSD functional
+gate. It does not approve DSpark as a default, representative throughput,
+long-context stability, or parity with the original FP8 model.
+
 ## Publication topology
 
 The reviewed nested patch is published at immutable commit
-`0c654079b8fd78aa3440107b5db7158c115cb93e` in the public
-`PhilipJohnBasile/ds4` fork, and the parent submodule URL/pin targets that
-reachable commit. Draft upstream PR `antirez/ds4#798` preserves the path back
-to the canonical repository. The parent is rebased onto current upstream
-`603b4c8` and the focused Debug/ReleaseSafe/ReleaseFast plus clean ReleaseFast
-binary build all pass at that topology. A final parent review is still
-required; a dirty or locally unreachable submodule is never accepted as
-release evidence.
+`69b376268f52e44cc42077efcecfd7c4990ab6ae` in the public
+`PhilipJohnBasile/ds4` fork, and the parent submodule pin targets that reachable
+commit. At the frozen check, upstream PR `antirez/ds4#798` was open, non-draft,
+and mergeable with this exact head; it preserves the path back to the canonical
+repository. A later upstream merge would require a separate canonical-URL and
+gitlink bump, not a reinterpretation of this candidate's public-fork source
+closure. The parent is rebased onto upstream `603b4c8`; its current ReleaseFast
+build, DS4 ABI guard, and focused DS4 tests pass. The two unrelated full-suite
+GPU numerical failures are recorded above. A dirty or locally unreachable
+submodule is never accepted as release evidence.
 
 ## Standalone DwarfStar evidence
 

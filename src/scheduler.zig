@@ -4307,9 +4307,9 @@ fn runPrefillLlama(sch: *Scheduler, slot: *Slot, engine: *arch_llama.LlamaEngine
     slot.state = .decoding;
 }
 
-/// ds4 decode tick: argmax (temp ≤ 0) or sample, check EOS, push token,
-/// `eval(token)` to extend the session, and stop on max_tokens. Each call
-/// emits exactly one token (unlike PLD/drafter which can emit several).
+/// ds4 decode tick: eligible greedy sessions use the engine-owned speculative
+/// lane and may emit several accepted tokens; other sessions sample or argmax
+/// one token and evaluate it. Both paths enforce EOS and max_tokens here.
 fn runDs4DecodeTick(sch: *Scheduler, slot: *Slot, session: *arch_ds4.Ds4Session) !void {
     const engine = slot.model.ds4_engine.?;
     const next_id: i32 = if (slot.sampling.temperature <= 0.0)
@@ -4994,9 +4994,9 @@ fn publishSpeculativeBlock(sch: *Scheduler, slot: *Slot, gen: *Generator, tokens
 }
 
 fn runSingleDecodeTick(sch: *Scheduler, slot: *Slot) !void {
-    // ds4-backed slot: drive the engine's session forward by one token. No
-    // PLD / drafter / batched paths apply — ds4 has its own internal MTP
-    // (see TODO: wire `evalSpeculative` when temp=0 and engine.hasMtp()).
+    // ds4-backed slot: drive the engine's session through its internal
+    // speculative lane when eligible, with ordinary single-token decode as
+    // the engine-owned fallback. mlx-serve PLD/drafter batching does not apply.
     if (slot.ds4_session) |session| {
         return runDs4DecodeTick(sch, slot, session);
     }
