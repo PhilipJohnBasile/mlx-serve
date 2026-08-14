@@ -66,13 +66,20 @@ pub fn build(b: *std.Build) void {
     // that have NO runtime query API (MLX + ggml report themselves at runtime):
     //   --mlx-c-version  pinned mlx-c submodule version; defaults from the
     //                    lib/mlx/.version stamp (written by scripts/build-mlx.sh)
-    //   --ds4-commit     explicit release pin; plain builds inspect the local
-    //                    DwarfStar checkout, including a dirty marker
+    //   --ds4-commit     explicit release pin. Plain builds deliberately
+    //                    report "unknown" rather than reusing a cached Git
+    //                    identity; CI/app builds derive and pass the pin.
     //   --llama-tag      llama.cpp release tag; defaults from lib/llama/.version
     //                    (written by scripts/fetch-llama.sh) so a plain dev build
     //                    still reports it. app/build.sh passes all three.
     const mlx_c_version = b.option([]const u8, "mlx-c-version", "Pinned mlx-c version") orelse readMlxcPin(b) orelse "unknown";
-    const ds4_commit = b.option([]const u8, "ds4-commit", "Pinned ds4 submodule short commit") orelse readDs4GitIdentity(b) orelse "unknown";
+    // Git state is not a declared Zig build input. Re-querying it here let a
+    // cached clean identity survive a later `git status` failure, so a plain
+    // build could make a false source-provenance claim. Release.yml and
+    // app/build.sh compute scripts/ds4-git-identity.sh first and pass the
+    // result explicitly. Developers get an honest unknown unless they choose
+    // the same explicit -Dds4-commit contract.
+    const ds4_commit = b.option([]const u8, "ds4-commit", "Pinned ds4 submodule short commit") orelse "unknown";
     const llama_tag = b.option([]const u8, "llama-tag", "llama.cpp release tag (bNNNN)") orelse readLlamaTag(b) orelse "unknown";
 
     const build_options = b.addOptions();
@@ -500,28 +507,6 @@ fn readLlamaTag(b: *std.Build) ?[]const u8 {
     ) catch return null;
     const trimmed = std.mem.trim(u8, bytes, " \t\r\n");
     return if (trimmed.len == 0) null else b.dupe(trimmed);
-}
-
-/// Plain developer builds should disclose the DwarfStar revision they really
-/// compiled. The release path can still pass an explicit --ds4-commit pin.
-/// Return null only when git metadata is genuinely unavailable.
-fn readDs4GitIdentity(b: *std.Build) ?[]const u8 {
-    var ignored_exit_code: u8 = undefined;
-    const revision = b.runAllowFail(
-        &.{ "git", "-C", "lib/ds4", "rev-parse", "--short=12", "HEAD" },
-        &ignored_exit_code,
-        .inherit,
-    ) catch return null;
-    const trimmed_revision = std.mem.trim(u8, revision, " \t\r\n");
-    if (trimmed_revision.len == 0) return null;
-
-    const status = b.runAllowFail(
-        &.{ "git", "-C", "lib/ds4", "status", "--porcelain", "--untracked-files=normal" },
-        &ignored_exit_code,
-        .inherit,
-    ) catch return null;
-    const dirty = std.mem.trim(u8, status, " \t\r\n").len != 0;
-    return b.fmt("{s}{s}", .{ trimmed_revision, if (dirty) "-dirty" else "" });
 }
 
 fn addLlamaLib(b: *std.Build, module: *std.Build.Module) void {

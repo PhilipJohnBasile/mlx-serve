@@ -8,11 +8,16 @@ benchmark or a claim of parity with the original FP8 model.
 ## Frozen inputs
 
 - Historical smoke lineage base: `d9c7986de5c8be9dc02640e7c017bdfd8b1da483`
-- Current direct parent base: `603b4c865d0682c8de96e6cbbf804e01fce6d632`
-- Frozen parent-candidate `HEAD`:
-  `3cb52fe62299b0659972064c5f87682789b10d50` (committed and published on
-  `codex/dsv4-dwarfstar-refresh-20260813`; only the final five-file ds4
-  repin, receipt, and comment delta is deliberately uncommitted for review)
+- Superseded direct parent base: `603b4c865d0682c8de96e6cbbf804e01fce6d632`
+- Current merge-ready upstream base:
+  `1607911d9d5725cf66d9960b72cd8bdf2f8d197c` (`origin/main`, mlx-serve
+  26.8.6).
+- Current merge-ready parent `HEAD`:
+  `b06b01de63c8f2dc7545abd1982c03e9c476ad6b` on
+  `codex/dsv4-dwarfstar-merge-ready`. It is the clean cherry-pick of
+  `118dd8a` (backend integration) and `b06b01d` (reviewed DS4 pin and
+  evidence) onto the current upstream base. The receipt/evidence additions
+  described below remain deliberately uncommitted until final review.
 - DwarfStar base: `84cc882352757baf628a1776badf7cc54d584e28`
 - Historical first published DwarfStar integration commit:
   `0c654079b8fd78aa3440107b5db7158c115cb93e`. The current reviewed pin is
@@ -26,6 +31,11 @@ benchmark or a claim of parity with the original FP8 model.
 - Built `mlx-serve` binary SHA-256:
   `ad5175302ed6f972ae29da19f9e3d34b94891bff580890b80a087d7cb15806cc`
   (11,202,664 bytes; historical smoke binary, superseded below)
+- Current merge-ready ReleaseFast binary SHA-256:
+  `0ab608666fdcc1deda0b49b143608acc56c329ac53e07a29226f21994d411e96`
+  (11,526,568 bytes; `mlx-serve 26.8.6`, `mlx 0.32.0`, `llama.cpp b10034`,
+  `ds4 69b376268f52`). This is a contemporaneous separate-command record; the
+  command output is not persisted in the checked-in raw smoke evidence.
 - Standalone DwarfStar server used for the bounded-memory mixed-model quality
   follow-up SHA-256:
   `6f82a4bf286abaea4c178de80f9bb82dc8463e3beab173083327acecf5ece1c1`
@@ -68,12 +78,15 @@ matching embedded sources.
 - All five scheduler `LoadParams` factories are source-guarded to forward the
   same SSD-streaming, MTP, and DSpark launch policy; the focused suite fails if
   any constructor omits one of those fields.
-- App-build DS4 provenance: PASS in a hermetic temporary Git repository for a
-  clean checkout, a tracked edit, an untracked file, and a partial Git failure
-  where revision lookup succeeds but status fails. Dirty checkouts append
-  `-dirty`; status failure returns no identity instead of false-clean. Plain Zig
-  builds use `runAllowFail` plus `catch return null`, whose nonzero-exit error
-  path likewise falls back to `unknown`.
+- DwarfStar provenance helper: PASS in a hermetic temporary Git repository for
+  a clean checkout, a tracked edit, an untracked file, and a partial Git
+  failure where revision lookup succeeds but status fails. Dirty checkouts
+  append `-dirty`; status failure returns no identity instead of false-clean.
+  The release workflow derives that helper value once and passes it as explicit
+  `-Dds4-commit`; plain Zig builds deliberately report `unknown` unless given
+  that explicit pin, so cached Git state cannot be advertised as provenance. A
+  same-isolated-cache ReleaseFast regression covers clean → broken-index status
+  failure (`unknown`) → clean recovery, plus an explicit helper-derived pin.
 - Release-workflow static gates: PASS after the app-build provenance change.
 - Standalone no-model admission ledger: PASS for exact boundary,
   insufficient-headroom rejection, and overflow rejection.
@@ -106,41 +119,59 @@ matching embedded sources.
   are retained, not counted as post-repin passing evidence.
 
 No model, GPU inference, public endpoint, or network benchmark was run during
-the post-review repairs recorded above. The measurements below are explicitly
-historical evidence from earlier work, not post-review validation.
+the post-review repairs recorded above. The next section records the later,
+serialized merge-ready functional gate; older measurements remain explicitly
+historical evidence rather than post-repair performance approval.
 
 ## Serialized post-review M5 target-only gate
 
-After the frozen five-file parent candidate passed independent review, one
-exclusive local functional smoke was run against the exact reviewed
-ReleaseFast binary and mixed-0731 target. This was a target-only SSD-streaming
-gate, not a benchmark and not DSpark evidence.
+After rebasing the integration onto current `origin/main`, one exclusive local
+functional smoke was run against the exact merge-ready ReleaseFast binary and
+mixed-0731 target. This was a target-only SSD-streaming compatibility gate,
+not a benchmark and not DSpark evidence. The earlier `db90948a...` smoke on
+the superseded parent candidate also passed, but the evidence below replaces
+it for merge decisions.
 
-- Binary SHA-256: `db90948aa1f12d511bec24af610e86764bbf50732325b9ed1b39ff8f66968063`
-  (11,238,376 bytes; `ds4 69b376268f52`).
+- The checked-in server log proves this run identified itself as `mlx-serve
+  26.8.6` using the DS4 GGUF backend. The binary hash, size, and detailed
+  component-version command were contemporaneous separate-command observations;
+  they are not persisted in the checked-in raw smoke evidence.
 - Target path:
   `/Users/pjb/git/ds4/gguf/DeepSeek-V4-Flash-Layers37-42Q4KExperts-OtherExpertLayersIQ2XXSGateUp-Q2KDown-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-fixed-0731.gguf`
-  (97,591,747,456 bytes). Its receipt-bound SHA-256 remains
-  `659e22fbd01c9e13ea37a57c8d9c41e0a8819dffa3473d3c5286ee44b2d3398f`;
-  this gate checked the exact size/path but did not reread 97.6 GB solely to
-  recompute that historical digest.
+  (97,591,747,456 bytes). The full-file SHA-256 command that matched
+  `659e22fbd01c9e13ea37a57c8d9c41e0a8819dffa3473d3c5286ee44b2d3398f` was
+  likewise a contemporaneous separate-command observation, not persisted in
+  the checked-in raw evidence.
 - Launch policy: `--ssd-streaming --no-ds4-mtp --ctx-size 8192 --temp 0`,
-  loopback-only on port 18073. System memory was 90% free and no other MLX,
-  oMLX, MTPLX, llama, DwarfStar, test, or Zig-build workload was active.
-- Admission: PASS. The wrapper logged `has_mtp=false`, skipped full model
-  residency and warmup, selected the bounded 8.00 GiB SSD expert budget, and
-  reported 9.47 GiB planned memory (0.42 GiB KV, 0.06 GiB buffers, 0.99 GiB
-  resident model, 4.62 GiB dynamic cache, 3.38 GiB prefill reserve).
+  loopback-only on port 18074. The 93%-free memory reading and process review
+  were contemporaneous PTY observations; neither is persisted in the checked-in
+  raw evidence.
+- Admission: PASS. The checked-in server log proves `has_mtp=false` and the
+  bounded 8.00 GiB SSD expert budget. The skipped full-residency/warmup state
+  and the detailed 9.47 GiB plan (0.42 GiB KV, 0.06 GiB buffers, 0.99 GiB
+  resident model, 4.62 GiB dynamic cache, 3.38 GiB prefill reserve) were
+  contemporaneous PTY observations, not persisted raw evidence.
 - Public OpenAI-compatible request: PASS. For “Reply with exactly the integer
   that is one more than 10. No punctuation.” with `max_tokens=1`, the server
-  returned exactly `11` (20 prompt + one completion token). The log reported
-  4.775 seconds total and 5.0 prompt tok/s; a one-token length-limited response
-  is not a meaningful decode-throughput measurement.
-- Teardown: PASS. SIGINT produced a graceful shutdown, port 18073 closed, no
-  `mlx-serve`/DwarfStar process remained, and system memory reported 91% free.
-- Post-run identity: the binary SHA-256 remained exact and the pre-receipt-edit
-  five-file diff remained
-  `38491d871ee7490670dc39e45d49851d10b0aad7d9ddb86651ee61e4f5a6f6d5`.
+  returned exactly `11` (20 prompt + one completion token). The checked-in
+  response JSON proves the content, token counts, 3.876 seconds prompt work
+  (5.160 tok/s), and 0.551 seconds for the single completion token (1.817
+  tok/s); the checked-in server log records 4.426 seconds total. The client
+  HTTP status and client-wall observation were not persisted. This one-token
+  length-limited result is intentionally adverse compatibility evidence, not a
+  representative speed claim.
+- Teardown: PASS. The checked-in server log records graceful shutdown. Port
+  closure, no remaining `mlx-serve`/DwarfStar process, and the post-run memory
+  reading were contemporaneous PTY observations, not persisted raw evidence.
+- Post-run identity: binary and target hash commands were contemporaneous
+  separate-command observations, not persisted raw evidence.
+- Checked-in raw evidence:
+  `receipts/dsv4/2026-08-13-dwarfstar-merge-ready-m5-smoke.log` and
+  `receipts/dsv4/2026-08-13-dwarfstar-merge-ready-m5-response.json`.
+  Their SHA-256 identities are respectively
+  `76c713d6dd47f7ca2da8c33391e0a9b833d1c73f805f3de6b641d25412f4073c`
+  and
+  `008e86001729c7a95a642aa49be0aa7d757df1a178143a4fc55409e726a6c9c5`.
 
 This closes the required post-review real-model target-only SSD functional
 gate. It does not approve DSpark as a default, representative throughput,
@@ -155,7 +186,7 @@ commit. At the frozen check, upstream PR `antirez/ds4#798` was open, non-draft,
 and mergeable with this exact head; it preserves the path back to the canonical
 repository. A later upstream merge would require a separate canonical-URL and
 gitlink bump, not a reinterpretation of this candidate's public-fork source
-closure. The parent is rebased onto upstream `603b4c8`; its current ReleaseFast
+closure. The parent is rebased onto upstream `1607911`; its current ReleaseFast
 build, DS4 ABI guard, and focused DS4 tests pass. The two unrelated full-suite
 GPU numerical failures are recorded above. A dirty or locally unreachable
 submodule is never accepted as release evidence.
