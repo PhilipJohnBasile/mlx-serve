@@ -281,7 +281,7 @@ Steps...
 
 ### Embedded engines (`lib/<engine>/`)
 
-DSV4-Flash is served by the embedded **ds4** engine (antirez/ds4, since renamed "DwarfStar" upstream), pinned at `lib/ds4/@69b3762`. `build.zig` compiles `ds4.c`, `ds4_distributed.c`, `ds4_ssd.c`, `ds4_tp.c`, `ds4_layer_pack.c`, and `ds4_metal.m`, plus `src/ds4_layout_check.c` for the FFI guard. The separate CLI/server/eval/agent support files (including `ds4_cli.c`, `ds4_server.c`, `ds4_bench.c`, `ds4_eval.c`, `ds4_agent.c`, `ds4_help.c`, `ds4_web.c`, `ds4_kvstore.c`, `ds4_gpu_args.c`, `rax.c`, and `linenoise.c`) are not embedded. The Zig MLX path no longer carries a DSV4 forward — `model_type=deepseek_v4` on a `.safetensors` checkpoint returns `error.UnsupportedDsv4MlxFormat`; users load the GGUF artifact through ds4 instead.
+DSV4-Flash is served by the embedded **ds4** engine (antirez/ds4, since renamed "DwarfStar" upstream), pinned at `lib/ds4/@34e30e7`. `build.zig` compiles `ds4.c`, `ds4_distributed.c`, `ds4_ssd.c`, `ds4_tp.c`, `ds4_layer_pack.c`, and `ds4_metal.m`, plus `src/ds4_layout_check.c` for the FFI guard. The separate CLI/server/eval/agent support files (including `ds4_cli.c`, `ds4_server.c`, `ds4_bench.c`, `ds4_eval.c`, `ds4_agent.c`, `ds4_help.c`, `ds4_web.c`, `ds4_kvstore.c`, `ds4_gpu_args.c`, `rax.c`, and `linenoise.c`) are not embedded. The Zig MLX path no longer carries a DSV4 forward — `model_type=deepseek_v4` on a `.safetensors` checkpoint returns `error.UnsupportedDsv4MlxFormat`; users load the GGUF artifact through ds4 instead.
 
 - C library API: `lib/ds4/ds4.h` (~200 lines, engine + session model).
 - FFI: `src/ds4_ffi.zig` (mechanical mirror of the header).

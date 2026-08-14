@@ -1,6 +1,6 @@
 # DeepSeek V4 Flash DwarfStar refresh — M5 Max smoke
 
-Date: 2026-08-13
+Date: 2026-08-13 (amended 2026-08-14)
 
 This is an integration and fixed-work smoke result, not a release-quality
 benchmark or a claim of parity with the original FP8 model.
@@ -12,18 +12,23 @@ benchmark or a claim of parity with the original FP8 model.
 - Current merge-ready upstream base:
   `1607911d9d5725cf66d9960b72cd8bdf2f8d197c` (`origin/main`, mlx-serve
   26.8.6).
-- Current merge-ready parent `HEAD`:
+- Historical pre-`34e30e7` parent `HEAD`:
   `b06b01de63c8f2dc7545abd1982c03e9c476ad6b` on
   `codex/dsv4-dwarfstar-merge-ready`. It is the clean cherry-pick of
   `118dd8a` (backend integration) and `b06b01d` (reviewed DS4 pin and
-  evidence) onto the current upstream base. The receipt/evidence additions
-  described below remain deliberately uncommitted until final review.
+  evidence) onto the current upstream base.
+- Current parent integration candidate: frozen parent `HEAD`
+  `c70db2718cab696dfdb6d03cc0fbbfba9721c188` on the same branch, with
+  merge-base `1607911d9d5725cf66d9960b72cd8bdf2f8d197c`. The `34e30e7`
+  gitlink, live pin references, and current evidence are uncommitted local
+  changes on that candidate; no future parent commit SHA is claimed here.
 - DwarfStar base: `84cc882352757baf628a1776badf7cc54d584e28`
 - Historical first published DwarfStar integration commit:
-  `0c654079b8fd78aa3440107b5db7158c115cb93e`. The current reviewed pin is
+  `0c654079b8fd78aa3440107b5db7158c115cb93e`. The superseded reviewed pin is
   `69b376268f52e44cc42077efcecfd7c4990ab6ae` on
-  `PhilipJohnBasile/ds4:codex/dsv4-ssd-dspark-m5`; upstream PR
-  `https://github.com/antirez/ds4/pull/798` is mergeable and ready for review.
+  `PhilipJohnBasile/ds4:codex/dsv4-ssd-dspark-m5`. Its raw smoke artifacts
+  below are immutable historical evidence; they do not establish the later
+  `34e30e7` wrapper result and must not be overwritten.
 - DwarfStar local integration patch: quality-mode SSD decode uses bounded
   full-layer maps instead of the compact selected-expert static map; an exact
   DSpark support GGUF can use a separate persistent read-only Metal view while
@@ -31,11 +36,11 @@ benchmark or a claim of parity with the original FP8 model.
 - Built `mlx-serve` binary SHA-256:
   `ad5175302ed6f972ae29da19f9e3d34b94891bff580890b80a087d7cb15806cc`
   (11,202,664 bytes; historical smoke binary, superseded below)
-- Current merge-ready ReleaseFast binary SHA-256:
+- Historical `69b3762` merge-ready ReleaseFast binary SHA-256:
   `0ab608666fdcc1deda0b49b143608acc56c329ac53e07a29226f21994d411e96`
   (11,526,568 bytes; `mlx-serve 26.8.6`, `mlx 0.32.0`, `llama.cpp b10034`,
-  `ds4 69b376268f52`). This is a contemporaneous separate-command record; the
-  command output is not persisted in the checked-in raw smoke evidence.
+  `ds4 69b376268f52`). This is historical only; the current rebuilt binary is
+  recorded in the `34e30e7` section below.
 - Standalone DwarfStar server used for the bounded-memory mixed-model quality
   follow-up SHA-256:
   `6f82a4bf286abaea4c178de80f9bb82dc8463e3beab173083327acecf5ece1c1`
@@ -119,11 +124,48 @@ matching embedded sources.
   are retained, not counted as post-repin passing evidence.
 
 No model, GPU inference, public endpoint, or network benchmark was run during
-the post-review repairs recorded above. The next section records the later,
-serialized merge-ready functional gate; older measurements remain explicitly
+the post-review repairs recorded above. The next section records the current
+`34e30e7` re-pin; the following serialized `69b3762` gate remains explicitly
 historical evidence rather than post-repair performance approval.
 
-## Serialized post-review M5 target-only gate
+## `34e30e7` lifecycle remediation re-pin and M5 functional smoke
+
+- Nested DwarfStar pin: `34e30e7a6635e910d38b1726f468dd4732ff5dca`, public
+  on `PhilipJohnBasile/ds4:codex/dsv4-ssd-dspark-m5`. The lifecycle repair
+  makes session-owned host-buffer release and DSpark admission release precede
+  the final shared-prefill-workspace borrow that permits engine close. It adds
+  deterministic concurrent close/free and creation-failure coverage; it is not
+  a DSpark enablement or default-on change.
+- Parent gates: PASS — `make test-dspark-final-remediation` (SSD admission,
+  DSpark readiness, shared-workspace admission, startup guards, persistent
+  support lifecycle, and final wiring); root `-Dtest-filter=ds4` in Debug,
+  ReleaseSafe, and ReleaseFast (including the DS4 FFI layout guard and 19/19
+  embedded-Metal inventory); the isolated-cache provenance regression
+  (plain clean → broken index → clean all `unknown`, then the explicit helper
+  pin); release-workflow static gates; and the staged-MLX/NAX static gate.
+- Rebuilt exact wrapper: SHA-256
+  `361a21f31e5c0df8559e488ad932f414b992b62e59f593b3371623d48ad48e91`,
+  11,527,672 bytes, `mlx-serve 26.8.6`, `mlx 0.32.0`, `llama.cpp b10034`,
+  and `ds4 34e30e7a6635`.
+- Public closure at the live check: `git ls-remote` resolved the public fork
+  branch to `34e30e7a6635e910d38b1726f468dd4732ff5dca`; `antirez/ds4#798`
+  was open, draft, and clean with that exact head. Parent `ddalcu/mlx-serve#175`
+  was open draft at public head `c70db2718cab696dfdb6d03cc0fbbfba9721c188`
+  with merge state `UNSTABLE`; this uncommitted candidate is not represented as
+  already published in that PR.
+- One exclusive M5 target-only SSD smoke: PASS. The current wrapper, exact
+  97,591,747,456-byte mixed-0731 target
+  (`659e22fbd01c9e13ea37a57c8d9c41e0a8819dffa3473d3c5286ee44b2d3398f`),
+  loopback-only launch, admission, health check, HTTP 200 request, response
+  `11`, memory observation, and clean teardown are recorded with exact argv,
+  environment, and raw artifact hashes in
+  `receipts/dsv4/2026-08-14-dwarfstar-34e30e7-m5-provenance.md`.
+
+This current smoke is a one-token compatibility gate only. Its 1.421339-second
+client wall time and one-token decode timing do not support a throughput claim;
+DSpark remains experimental and default-off.
+
+## Historical `69b3762` serialized post-review M5 target-only gate
 
 After rebasing the integration onto current `origin/main`, one exclusive local
 functional smoke was run against the exact merge-ready ReleaseFast binary and
@@ -173,11 +215,12 @@ it for merge decisions.
   and
   `008e86001729c7a95a642aa49be0aa7d757df1a178143a4fc55409e726a6c9c5`.
 
-This closes the required post-review real-model target-only SSD functional
-gate. It does not approve DSpark as a default, representative throughput,
-long-context stability, or parity with the original FP8 model.
+This historical result closed the then-required `69b3762` target-only SSD
+functional gate. It does not establish the `34e30e7` result above, approve
+DSpark as a default, establish representative throughput/long-context
+stability, or establish parity with the original FP8 model.
 
-## Publication topology
+## Historical `69b3762` publication topology
 
 The reviewed nested patch is published at immutable commit
 `69b376268f52e44cc42077efcecfd7c4990ab6ae` in the public

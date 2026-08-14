@@ -135,7 +135,7 @@ pub fn build(b: *std.Build) void {
     mod.addIncludePath(b.path("lib/xatlas"));
 
     // ds4 inference engine for DSV4-Flash (Metal backend, macOS only). See
-    // `lib/ds4/` submodule pinned at 69b3762 and `src/arch/ds4.zig`. Kernel
+    // `lib/ds4/` submodule pinned at 34e30e7 and `src/arch/ds4.zig`. Kernel
     // sources are embedded via `lib/ds4_metal_sources.zig` and extracted at
     // runtime to ~/.mlx-serve/ds4-metal/<hash>/.
     addDs4Sources(b, mod);
