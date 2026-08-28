@@ -2534,6 +2534,10 @@ pub fn fused256CausalMode() Fused256CausalMode {
     return mode;
 }
 
+fn customCausalPrefillOwns(nax_preferred: bool, override_active: bool) bool {
+    return override_active or !nax_preferred;
+}
+
 /// ONE predicate consumed by the three prefill OOM guards AND the dispatch
 /// sites: true when prefill attention at this head_dim will NOT materialize
 /// the composed [heads, chunk, total_kv] score tensor — either MLX's own
@@ -2580,7 +2584,8 @@ pub fn fusedSdpa256Prefill(
         if (fused256CausalMode() == .off) return null;
         // The band arm stays ours (mlx's NAX kernel takes no band); the
         // causal arm yields to the stock fused kernel on NAX.
-        if (naxSdpaPreferred()) return null;
+        const override_active = fused256_override != null;
+        if (!override_active and !customCausalPrefillOwns(naxSdpaPreferred(), override_active)) return null;
     }
     return fusedSdpa256Impl(s, q, k, v, scale, window, null);
 }
@@ -2819,16 +2824,20 @@ fn sdpaSplitEnabled() bool {
     return v;
 }
 
+fn causalSplitOwns(q_len: c_int, nax_preferred: bool, override_active: bool) bool {
+    return override_active or q_len <= 8 or !nax_preferred;
+}
+
 /// One engagement log per width (6..9): the first engagement is usually the
 /// warmup's own 8-token prefill (kL==qL==8) — a per-width line is what
 /// witnesses the split at REAL verify shapes in an A/B arm's log.
 var sdpa_split_logged: [4]bool = .{ false, false, false, false };
 
 /// Width-wall query split for dense causal spec-verify blocks (B==1, hd 256,
-/// q_len 6..9). MLX's sdpa has no full-kernel arm at hd 256 and its vector
-/// kernel serves q_len * gqa <= 32, so a 6..9-row verify block otherwise runs
-/// the slow internal fallback on every machine. Splitting the queries at row
-/// 5 keeps both halves on the vector path with windows byte-identical to two
+/// q_len 6..9). MLX's vector kernel serves q_len * gqa <= 32, so a 6..9-row
+/// verify block otherwise runs the slow internal fallback. On NAX, q_len > 8
+/// belongs to the stock full-attention kernel instead. Splitting the queries
+/// at row 5 keeps both halves on the vector path with windows byte-identical to two
 /// consecutive <= 5-row rounds at the same offsets (bottom-right causal
 /// alignment): chunk A (rows 0..<5) over keys[0 .. kL-(qL-5)], chunk B
 /// (rows 5..) over the full keys, both "causal". K/V are re-sliced views,
@@ -2850,6 +2859,8 @@ pub fn splitCausalSdpa(
     if (qs[3] != 256 or ks[3] != 256 or vs[3] != 256) return null;
     if (qs[0] != 1 or ks[0] != 1 or vs[0] != 1) return null;
     if (qs[2] < 6 or qs[2] > 9) return null;
+    const override_active = sdpa_split_override != null;
+    if (!override_active and !causalSplitOwns(qs[2], naxSdpaPreferred(), override_active)) return null;
     if (ks[2] < qs[2] or ks[2] != vs[2] or ks[1] != vs[1]) return null;
 
     const qL = qs[2];
@@ -33893,28 +33904,26 @@ test "fusedSdpa256Prefill: declines cleanly outside its envelope" {
     try std.testing.expect((try fusedSdpa256Prefill(s, q, q, q, 1.0, 0)) == null);
 }
 
-test "fusedSdpa256Prefill: causal and band both default FUSED (budgeted-dispatch flip)" {
+test "fusedSdpa256Prefill: custom causal routing yields to NAX while band stays available" {
+    try std.testing.expect(!customCausalPrefillOwns(true, false));
+    try std.testing.expect(customCausalPrefillOwns(true, true));
+
     const s = mlx.gpuStream();
+    fused256_override = true;
+    defer fused256_override = null;
+    nax_sdpa_override = true;
+    defer nax_sdpa_override = null;
     var prng = std.Random.DefaultPrng.init(0x4A7E);
     const rnd = prng.random();
 
-    // No override, no env: BOTH arms engage. The causal arm's historical
-    // net-loss (every pre-budget ratio-gated variant lost same-boot on the
-    // 27B) was the IOGPU preemption class — with the kv-chunk dispatch
-    // budget it wins live (2026-07-22 same-session A/B: +2.9%/+2.3%/+4.6%
-    // at 8K/16K/32K on the 27B), so causal is default-on now.
-    // MLX_SERVE_FUSED_256_CAUSAL=0 restores composed causal.
-    std.debug.assert(fused256_override == null);
+    // On M5 the stock NAX kernel owns plain causal attention. The custom
+    // kernel still owns sliding-band attention because stock NAX has no band.
     const q_shape = [_]c_int{ 1, 6, 64, 256 };
     const q = try attn256RandBf16(rnd, &q_shape, s);
     defer _ = mlx.mlx_array_free(q);
     const kv_shape = [_]c_int{ 1, 2, 64, 256 };
     const k = try attn256RandBf16(rnd, &kv_shape, s);
     defer _ = mlx.mlx_array_free(k);
-
-    const causal = try fusedSdpa256Prefill(s, q, k, k, 1.0, 0);
-    try std.testing.expect(causal != null);
-    if (causal) |f| _ = mlx.mlx_array_free(f);
 
     const banded = try fusedSdpa256Prefill(s, q, k, k, 1.0, 40);
     try std.testing.expect(banded != null);
@@ -34172,6 +34181,13 @@ test "splitCausalSdpa: declines outside its envelope" {
     // Kill switch -> null even for a conforming call.
     sdpa_split_override = false;
     try std.testing.expect((try splitCausalSdpa(s, q7, k, k, 1.0)) == null);
+}
+
+test "splitCausalSdpa: NAX owns width 9 unless the test override forces split" {
+    try std.testing.expect(causalSplitOwns(8, true, false));
+    try std.testing.expect(!causalSplitOwns(9, true, false));
+    try std.testing.expect(causalSplitOwns(9, true, true));
+    try std.testing.expect(causalSplitOwns(9, false, false));
 }
 
 // ── KV cache growth policy (issue #110) ──────────────────────────────────────
