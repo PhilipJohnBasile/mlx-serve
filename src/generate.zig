@@ -213,9 +213,9 @@ pub const MtpHeadRef = union(enum) {
         };
     }
 
-    fn qwen4Step(t: *Transformer, id_arr: mlx.mlx_array, hidden: mlx.mlx_array, rope_offset: c_int, want_logits: bool) !mtp_mod.StepOut {
+    fn qwen4Step(t: *Transformer, id_arr: mlx.mlx_array, hidden: mlx.mlx_array, rope_offset: c_int, want_logits: bool, mrope_ctx: ?mtp_mod.MropeContext) !mtp_mod.StepOut {
         const s = t.s;
-        const out = try t.qwen4MtpForward(hidden, id_arr, rope_offset + 1);
+        const out = try t.qwen4MtpForward(hidden, id_arr, rope_offset + 1, mrope_ctx);
         defer _ = mlx.mlx_array_free(out.logits);
         const hs = mlx.getShape(out.stream);
         if (!want_logits) return .{ .logits = .{ .ctx = null }, .hidden_next = out.stream };
@@ -245,7 +245,7 @@ pub const MtpHeadRef = union(enum) {
     ) !mtp_mod.StepOut {
         return switch (self) {
             .qwen => |h| mtp_mod.forwardWithMrope(h, target, &cache.qwen, id_arr, hidden, rope_offset, want_logits, mrope_ctx),
-            .qwen4 => |t| qwen4Step(t, id_arr, hidden, rope_offset, want_logits),
+            .qwen4 => |t| qwen4Step(t, id_arr, hidden, rope_offset, want_logits, mrope_ctx),
         };
     }
 
@@ -269,7 +269,7 @@ pub const MtpHeadRef = union(enum) {
                 const shape = [_]c_int{@intCast(token_ids.len)};
                 const id_arr = mlx.mlx_array_new_data(ids_i32.ptr, &shape, 1, .int32);
                 defer _ = mlx.mlx_array_free(id_arr);
-                const out = try qwen4Step(t, id_arr, hidden, rope_offset, false);
+                const out = try qwen4Step(t, id_arr, hidden, rope_offset, false, mrope_ctx);
                 _ = mlx.mlx_array_free(out.hidden_next);
             },
         }

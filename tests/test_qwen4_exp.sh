@@ -5,7 +5,8 @@
 # budget (2048 tokens) — asserted through the server's own
 # `[qsa] sparse attention engaged` line, since a dense fallback answers
 # plausibly too. [7] sends an image (tower + M-RoPE engagement lines) and
-# SKIPs when the pack ships no `model-vision.safetensors`. SKIPs without the pack.
+# SKIPs when the pack ships no `model-vision.safetensors`. [11] reboots
+# `--no-vision` (tower absent, text works, media 400s by name). SKIPs without the pack.
 #   QWEN4_MODEL=<pack dir> ./tests/test_qwen4_exp.sh [port]
 set -u
 MODEL="${QWEN4_MODEL:-$HOME/.mlx-serve/models/ddalcu/Qwen3.8-Flash-Next-MLX-Serve-4bit}"
@@ -25,7 +26,7 @@ same_or_tie() {
   curl -s -m 1200 "$U/v1/chat/completions" -H 'content-type: application/json' -d "$lp" | python3 -c "
 import sys,json; d=json.load(sys.stdin); other=sys.argv[1]; acc=''; ok=1
 for n,e in enumerate(d['choices'][0]['logprobs']['content'][:30]):
-    if not other.startswith(acc+e['token']):
+    if not other.startswith((acc+e['token']).lstrip()):  # content is lead-trimmed, tokens are not
         t=e['top_logprobs']; gap=(t[0]['logprob']-t[1]['logprob']) if len(t)>1 else 99
         print('  diverged at token %d, serial top-2 gap %.3f nats' % (n, gap), file=sys.stderr)
         ok=1 if gap <= 0.15 else 0; break
@@ -99,11 +100,14 @@ echo "  avg accepted per round: $apr"
 check "acceptance floor 0.5/round" "$(python3 -c "print(1 if float('${apr:-0}')>=0.5 else 0)")" "1"
 echo "[7] image turn (vision tower + M-RoPE)"
 IMAGE="$(dirname "$0")/fixtures/house.jpeg"
-if [ -f "$MODEL/model-vision.safetensors" ] && [ -f "$IMAGE" ]; then
+img=""
+if [ -f "$IMAGE" ]; then
   B64=$(base64 -i "$IMAGE")
   img=$(python3 -c "
 import json,sys
 print(json.dumps({'messages':[{'role':'user','content':[{'type':'text','text':'What is the main subject of this image? One word.'},{'type':'image_url','image_url':{'url':'data:image/jpeg;base64,'+sys.argv[1]}}]}],'max_tokens':48,'temperature':0,'enable_thinking':False}))" "$B64")
+fi
+if [ -f "$MODEL/model-vision.safetensors" ] && [ -f "$IMAGE" ]; then
   resp=$(echo "$img" | curl -s -m 600 -w '\n%{http_code}' "$U/v1/chat/completions" -H 'content-type: application/json' -d @-)
   code=$(echo "$resp" | tail -1)
   ians=$(echo "$resp" | sed '$d' | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['choices'][0]['message']['content'])" 2>/dev/null)
@@ -112,6 +116,15 @@ print(json.dumps({'messages':[{'role':'user','content':[{'type':'text','text':'W
   check "image answer names the house" "$(echo "$ians" | grep -ciE 'house|home|building|cottage' | sed 's/^[1-9][0-9]*$/1/')" "1"
   check "vision encoder load line" "$(grep -c 'Vision encoder: Qwen3-VL ViT' "$LOG")" "1"
   check "m-rope engaged" "$(grep -c 'M-RoPE: 1 images' "$LOG" | sed 's/^[1-9][0-9]*$/1/')" "1"
+  echo "[7b] MTP on the image turn (head reads the slot's M-RoPE table)"
+  nm7=$(grep -c 'spec-stats\] mode=mtp' "$LOG")
+  imgm=$(echo "$img" | python3 -c "import sys,json; d=json.load(sys.stdin); d['enable_mtp']=True; print(json.dumps(d))")
+  mans=$(echo "$imgm" | curl -s -m 600 "$U/v1/chat/completions" -H 'content-type: application/json' -d @- | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['choices'][0]['message']['content'])")
+  echo "  -> $(echo "$mans" | tr '\n' ' ' | cut -c1-80)"
+  check "mtp engaged on the image turn" "$(python3 -c "print(1 if $(grep -c 'spec-stats\] mode=mtp' "$LOG") > $nm7 else 0)")" "1"
+  check "mtp image answer == serial (tie-aware)" "$(same_or_tie "$img" "$mans")" "1"
+  # Sampled AFTER an image turn: tower weights are lazy until first use.
+  vis_bytes=$(curl -s "$U/props" | python3 -c "import sys,json; print(json.load(sys.stdin)['memory']['active_bytes'])")
 else
   echo "  SKIP: pack has no model-vision.safetensors"
 fi
@@ -167,5 +180,26 @@ echo "  mtp: $(echo "$tm" | tr '\n' ' ' | cut -c1-60)  plain: $(echo "$tp" | tr 
 check "exactly one more mtp engagement" "$(python3 -c "print($(grep -c 'spec-stats\] mode=mtp' "$LOG") - $nm0)")" "1"
 check "mtp answer == serial (tie-aware)" "$(same_or_tie "$pm" "$tm")" "1"
 check "plain answer == serial (tie-aware)" "$(same_or_tie "$pp" "$tp")" "1"
+echo "[11] --no-vision boot: tower absent, text works, media 400s by name"
+kill $SPID 2>/dev/null; wait $SPID 2>/dev/null
+LOG11="$LOG.novision"
+sleep 20
+"$BIN" --model "$MODEL" --serve --host 127.0.0.1 --port "$PORT" --log-level info --no-vision > "$LOG11" 2>&1 &
+SPID=$!
+for _ in $(seq 1 600); do curl -s "$U/health" >/dev/null 2>&1 && grep -q "Model ready" "$LOG11" && break; kill -0 $SPID 2>/dev/null || { echo "server died"; tail -20 "$LOG11"; exit 1; }; sleep 2; done
+check "vision encoder load line absent" "$(grep -c 'Vision encoder: Qwen3-VL ViT' "$LOG11")" "0"
+check "capabilities drop vision" "$(curl -s "$U/v1/models" | python3 -c "import sys,json; print(1 if 'vision' in json.load(sys.stdin)['data'][0].get('capabilities',[]) else 0)")" "0"
+nv_bytes=$(curl -s "$U/props" | python3 -c "import sys,json; print(json.load(sys.stdin)['memory']['active_bytes'])")
+if [ -n "${vis_bytes:-}" ]; then
+  echo "  active_bytes with tower: $vis_bytes  without: $nv_bytes"
+  check "resident memory lower without the tower (>= 400 MB)" "$(python3 -c "print(1 if $vis_bytes - $nv_bytes >= 400*1024*1024 else 0)")" "1"
+fi
+ans=$(curl -s -m 300 "$U/v1/chat/completions" -H 'content-type: application/json' -d '{"messages":[{"role":"user","content":"What is the capital of France? Answer with one word."}],"max_tokens":64,"temperature":0,"enable_thinking":false}' | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['choices'][0]['message']['content'])")
+check "text turn mentions Paris" "$(echo "$ans" | grep -ci paris | sed 's/^[1-9][0-9]*$/1/')" "1"
+if [ -f "$IMAGE" ]; then
+  resp=$(echo "$img" | curl -s -m 600 -w '\n%{http_code}' "$U/v1/chat/completions" -H 'content-type: application/json' -d @-)
+  check "image turn http 400" "$(echo "$resp" | tail -1)" "400"
+  check "400 names the missing tower" "$(echo "$resp" | grep -c 'vision tower')" "1"
+fi
 echo "passed $pass failed $fail"
 [ "$fail" = 0 ]

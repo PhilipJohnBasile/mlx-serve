@@ -10976,18 +10976,18 @@ pub const Transformer = struct {
     fn hcReadFusedFor(self: *Transformer, stream: mlx.mlx_array, w: *const HcWeights, batch: c_int, seq_len: c_int, pend: ?HcPending) !?HcFusedOut {
         const hc: c_int = @intCast(self.config.hc_count);
         const hidden: c_int = @intCast(self.config.hidden_size);
-        if (batch * seq_len != 1 or w.down_s.ctx == null or w.up_s.ctx == null or (w.inject_w.ctx != null and w.inject_flat.ctx == null)) return null;
+        if (batch * seq_len > HC_FUSED_MAX_ROWS or w.down_s.ctx == null or w.up_s.ctx == null or (w.inject_w.ctx != null and w.inject_flat.ctx == null)) return null;
         const dqp = self.quantParamsHinted(w.down_w, w.down_s, @intCast(hc * hidden));
         const uqp = self.quantParamsFor(w.up_w, w.up_s);
         if (dqp.bits != uqp.bits or dqp.group_size != uqp.group_size or dqp.mode != .affine or uqp.mode != .affine) return null;
-        return hcReadFused(self.s, stream, w.norm_w, w.down_w, w.down_s, w.down_b, w.up_w, w.up_s, w.up_b, w.inject_flat, self.config.rms_norm_eps, hc, hidden, dqp.bits, dqp.group_size, pend);
+        return hcReadFused(self.s, stream, batch, seq_len, w.norm_w, w.down_w, w.down_s, w.down_b, w.up_w, w.up_s, w.up_b, w.inject_flat, self.config.rms_norm_eps, hc, hidden, dqp.bits, dqp.group_size, pend);
     }
 
     /// Defer `stream += out * inj` to the next read when the fused read will
-    /// take it (decode width); otherwise write now.
+    /// take it (decode/verify/batched widths); otherwise write now.
     fn hcWriteOrDefer(self: *Transformer, h: *mlx.mlx_array, out: mlx.mlx_array, inj: mlx.mlx_array, batch: c_int, seq_len: c_int, pending: *?HcPending) !void {
         std.debug.assert(pending.* == null);
-        if (batch * seq_len == 1 and hcFusedEnabled() and mlx.mlx_array_dtype(h.*) == mlx.mlx_array_dtype(out)) {
+        if (batch * seq_len <= HC_FUSED_MAX_ROWS and hcFusedEnabled() and mlx.mlx_array_dtype(h.*) == mlx.mlx_array_dtype(out)) {
             var pd: HcPending = undefined;
             pd.out = mlx.mlx_array_new();
             try mlx.check(mlx.mlx_array_set(&pd.out, out));
@@ -11879,7 +11879,11 @@ pub const Transformer = struct {
         m.seq_offset = len;
     }
 
-    pub fn qwen4MtpForward(self: *Transformer, stream_prev: mlx.mlx_array, token_ids_in: mlx.mlx_array, pos_offset: c_int) !Qwen4MtpOut {
+    /// `mrope_ctx` (image turns): the head's rows sit at ABSOLUTE positions
+    /// `pos_base + seq_offset ..`, so its attention + QSA indexer read the
+    /// slot's 3-D table there (prompt rows spanning the image) and the
+    /// scalar `offset + delta` past it — the same two arms as the trunk.
+    pub fn qwen4MtpForward(self: *Transformer, stream_prev: mlx.mlx_array, token_ids_in: mlx.mlx_array, pos_offset: c_int, mrope_ctx: ?mrope.PositionContext) !Qwen4MtpOut {
         const m = &(self.qwen4_mtp orelse return error.NoMtpHead);
         const cfg = &self.config;
         const hc: c_int = @intCast(cfg.hc_count);
@@ -11919,6 +11923,13 @@ pub const Transformer = struct {
         errdefer _ = mlx.mlx_array_free(h);
 
         var ctx: ForwardCtx = .{ .cache = &m.cache, .moe_seq_offset = &m.seq_offset, .ssm_entries = null, .capture_hidden = null, .vision_embeddings = null };
+        if (mrope_ctx) |mc| {
+            ctx.mrope_pos = mc.pos;
+            ctx.mrope_total = mc.total;
+            ctx.mrope_delta = mc.delta;
+        }
+        try self.beginMropeChunk(&ctx, @intCast(m.pos_base + @as(c_int, @intCast(m.seq_offset))), @intCast(seq_len), mlx.mlx_array_dtype(h));
+        defer endMropeChunk(&ctx);
         const li: u32 = cfg.num_hidden_layers;
         const lw = &m.layer;
         var pre = try self.hcRead(h, &lw.hc_attn.?, batch, seq_len);
@@ -15214,7 +15225,7 @@ pub const Transformer = struct {
         // gate + beta. The per-channel (KDA) gate never lands here — its
         // q/k/v layout is the same but the composed path is what its parity
         // tests pin; the bounded-sigmoid gate arm is composed too.
-        if (!cfg.kda_vector_gate and !cfg.kdaUsesBoundedGate() and batch == 1 and kernel == 4 and ssm.initialized) blk: {
+        if (!cfg.kda_vector_gate and !cfg.kdaUsesBoundedGate() and batch * seq_len <= GDN_FUSED_MAX_ROWS and kernel == 4 and ssm.initialized) blk: {
             const pre = (gdnPreworkFused(self.s, .{
                 .qkv = qkv,
                 .qkv_off = 0,
@@ -15236,6 +15247,7 @@ pub const Transformer = struct {
                 .dk = dk,
                 .dv = dv,
                 .seq = seq_len,
+                .batch = batch,
             }) catch null) orelse break :blk;
             // Spec-capture rollback slices the conv INPUT; build the concat
             // the composed path would have stashed (lazy, one launch).
@@ -15514,7 +15526,7 @@ pub const Transformer = struct {
         // out_proj input (decode/verify widths, per-head swish gate archs).
         if (fused_prework) {
             if (self.gdn_eps == null) self.gdn_eps = mlx.mlx_array_new_float(cfg.rms_norm_eps);
-            if (try gdnNormGateFused(self.s, y_bthd, z_proj, 0, value_dim, la.norm_w, self.gdn_eps.?, !cfg.kda_sigmoid_out_gate, num_v_heads, dv, seq_len)) |flat| {
+            if (try gdnNormGateFused(self.s, y_bthd, z_proj, 0, value_dim, la.norm_w, self.gdn_eps.?, !cfg.kda_sigmoid_out_gate, num_v_heads, dv, batch, seq_len)) |flat| {
                 defer _ = mlx.mlx_array_free(flat);
                 return self.qmatmul(flat, la.out_w, la.out_s, la.out_b);
             }
@@ -20953,7 +20965,11 @@ const GDN_KERNEL_HEADER =
 
 const GDN_PREWORK_SOURCE =
     \\uint lane = thread_position_in_threadgroup.x;
+    \\// Grid row = b*S + r over the batch: q/k/v/g/beta/b/a are [B,S,..] flat
+    \\// so `row` indexes them directly; the conv taps + next state are per batch.
     \\uint row = threadgroup_position_in_grid.y;
+    \\uint b = row / uint(S);
+    \\uint r = row - b * uint(S);
     \\uint logical_head = threadgroup_position_in_grid.z;
     \\constexpr uint q_heads = uint(HK);
     \\constexpr uint k_head_base = uint(HK);
@@ -20971,10 +20987,10 @@ const GDN_PREWORK_SOURCE =
     \\    uint channel = channel_base + lane * 4 + i;
     \\    float acc = 0.0f;
     \\    for (uint tap = 0; tap < 4; ++tap) {
-    \\        uint input_row = row + tap;
+    \\        uint input_row = r + tap;
     \\        const T xv = input_row < uint(NKEEP)
-    \\            ? conv_state[input_row * uint(C) + channel]
-    \\            : qkv[(input_row - uint(NKEEP)) * uint(QSTRIDE) + uint(QOFF) + channel];
+    \\            ? conv_state[(b * uint(NKEEP) + input_row) * uint(C) + channel]
+    \\            : qkv[(row + tap - uint(NKEEP)) * uint(QSTRIDE) + uint(QOFF) + channel];
     \\        acc += float(xv) * float(conv_w[channel * 4 + tap]);
     \\    }
     \\    const T conv = T(acc);
@@ -21020,18 +21036,18 @@ const GDN_PREWORK_SOURCE =
     \\    }
     \\}
     \\// Next conv state = rows [S, S+NKEEP) of concat(conv_state, qkv).
-    \\if (row + uint(NKEEP) >= uint(S)) {
-    \\    uint state_row = row + uint(NKEEP) - uint(S);
+    \\if (r + uint(NKEEP) >= uint(S)) {
+    \\    uint state_row = r + uint(NKEEP) - uint(S);
     \\    uint raw_base = row * uint(QSTRIDE) + uint(QOFF) + channel_base + lane * 4;
-    \\    uint state_base = state_row * uint(C) + channel_base + lane * 4;
+    \\    uint state_base = (b * uint(NKEEP) + state_row) * uint(C) + channel_base + lane * 4;
     \\    for (uint i = 0; i < 4; ++i) {
     \\        conv_out[state_base + i] = qkv[raw_base + i];
     \\    }
     \\}
-    \\if (row == 0) {
-    \\    for (uint r = 0; r + uint(S) < uint(NKEEP); ++r) {
-    \\        uint src_base = (r + uint(S)) * uint(C) + channel_base + lane * 4;
-    \\        uint dst_base = r * uint(C) + channel_base + lane * 4;
+    \\if (r == 0) {
+    \\    for (uint rr = 0; rr + uint(S) < uint(NKEEP); ++rr) {
+    \\        uint src_base = (b * uint(NKEEP) + rr + uint(S)) * uint(C) + channel_base + lane * 4;
+    \\        uint dst_base = (b * uint(NKEEP) + rr) * uint(C) + channel_base + lane * 4;
     \\        for (uint i = 0; i < 4; ++i) {
     \\            conv_out[dst_base + i] = conv_state[src_base + i];
     \\        }
@@ -21089,18 +21105,20 @@ fn getGdnPreworkKernel() !mlx.mlx_fast_metal_kernel {
     return kernel;
 }
 
-const GdnPreworkCfgKey = struct { hk: c_int, hv: c_int, seq: c_int, c: c_int, qs: c_int, qo: c_int, bs: c_int, bo: c_int, as: c_int, ao: c_int };
+const GdnPreworkCfgKey = struct { hk: c_int, hv: c_int, seq: c_int, batch: c_int, c: c_int, qs: c_int, qo: c_int, bs: c_int, bo: c_int, as: c_int, ao: c_int };
 var gdn_prework_cfg: ?mlx.mlx_fast_metal_kernel_config = null;
 var gdn_prework_cfg_key: GdnPreworkCfgKey = std.mem.zeroes(GdnPreworkCfgKey);
 
 pub const GdnPrework = struct {
-    q: mlx.mlx_array, // [1, S, Hk, 128] normed + scaled
-    k: mlx.mlx_array, // [1, S, Hk, 128] normed + scaled
-    v: mlx.mlx_array, // [1, S, Hv, 128] silu-activated
-    conv_state: mlx.mlx_array, // [1, NKEEP, C] next conv state
-    g: mlx.mlx_array, // [1, S, Hv] forget gate
-    beta: mlx.mlx_array, // [1, S, Hv] sigmoid(b)
+    q: mlx.mlx_array, // [B, S, Hk, 128] normed + scaled
+    k: mlx.mlx_array, // [B, S, Hk, 128] normed + scaled
+    v: mlx.mlx_array, // [B, S, Hv, 128] silu-activated
+    conv_state: mlx.mlx_array, // [B, NKEEP, C] next conv state
+    g: mlx.mlx_array, // [B, S, Hv] forget gate
+    beta: mlx.mlx_array, // [B, S, Hv] sigmoid(b)
 };
+/// Rows (batch*seq) the decode-width GDN fusions serve.
+pub const GDN_FUSED_MAX_ROWS: c_int = 16;
 
 /// Inputs of the packed prework. `qkv`/`b`/`a` are read at `(off, stride)`
 /// per row, so they may all alias one folded in_proj output.
@@ -21116,7 +21134,7 @@ pub const GdnPreworkArgs = struct {
     a_stride: c_int,
     A_log: mlx.mlx_array, // [Hv]
     dt_bias: mlx.mlx_array, // [Hv] bf16
-    conv_state: mlx.mlx_array, // [1, NKEEP, C] bf16
+    conv_state: mlx.mlx_array, // [B, NKEEP, C] bf16
     conv_w: mlx.mlx_array, // [C, 4, 1] bf16
     q_scale: mlx.mlx_array, // 0-dim bf16 (1/dk)
     k_scale: mlx.mlx_array, // 0-dim bf16 (1/sqrt(dk))
@@ -21125,14 +21143,16 @@ pub const GdnPreworkArgs = struct {
     dk: c_int,
     dv: c_int,
     seq: c_int,
+    batch: c_int = 1,
 };
 
-/// One fused dispatch for the GDN prework at S 1..9 (per-head gate archs
-/// only). Null → caller keeps the composed chain. The caller owns all six
-/// outputs (and installs `conv_state` into the SSM cache entry).
+/// One fused dispatch for the GDN prework at S 1..9 x B batched slots
+/// (batch*seq <= GDN_FUSED_MAX_ROWS; per-head gate archs only). Null →
+/// caller keeps the composed chain. The caller owns all six outputs (and
+/// installs `conv_state` into the SSM cache entry).
 pub fn gdnPreworkFused(s: mlx.mlx_stream, in: GdnPreworkArgs) !?GdnPrework {
     if (!gdnPreworkEnabled()) return null;
-    if (in.seq < 1 or in.seq > 9) return null;
+    if (in.seq < 1 or in.seq > 9 or in.batch < 1 or in.batch * in.seq > GDN_FUSED_MAX_ROWS) return null;
     if (in.seq < 3 and !gdnDecodeFusedEnabled()) return null;
     if (in.dk != 128 or in.dv != 128) return null;
     inline for (.{ in.qkv, in.b, in.a, in.conv_state, in.conv_w, in.dt_bias }) |arr| {
@@ -21142,28 +21162,30 @@ pub fn gdnPreworkFused(s: mlx.mlx_stream, in: GdnPreworkArgs) !?GdnPrework {
     if (wsh.len < 2 or wsh[1] != 4) return null;
     const c_dim: c_int = in.hk * in.dk * 2 + in.hv * in.dv;
     const qsh = mlx.getShape(in.qkv);
-    if (qsh.len != 3 or qsh[0] != 1 or qsh[1] != in.seq or qsh[2] != in.qkv_stride or in.qkv_off + c_dim > in.qkv_stride) return null;
+    if (qsh.len != 3 or qsh[0] != in.batch or qsh[1] != in.seq or qsh[2] != in.qkv_stride or in.qkv_off + c_dim > in.qkv_stride) return null;
     const bsh = mlx.getShape(in.b);
-    if (bsh.len != 3 or bsh[1] != in.seq or bsh[2] != in.b_stride or in.b_off + in.hv > in.b_stride) return null;
+    if (bsh.len != 3 or bsh[0] != in.batch or bsh[1] != in.seq or bsh[2] != in.b_stride or in.b_off + in.hv > in.b_stride) return null;
     const ash = mlx.getShape(in.a);
-    if (ash.len != 3 or ash[1] != in.seq or ash[2] != in.a_stride or in.a_off + in.hv > in.a_stride) return null;
+    if (ash.len != 3 or ash[0] != in.batch or ash[1] != in.seq or ash[2] != in.a_stride or in.a_off + in.hv > in.a_stride) return null;
+    const csh = mlx.getShape(in.conv_state);
+    if (csh.len != 3 or csh[0] != in.batch or csh[1] != 3 or csh[2] != c_dim) return null;
 
     const nkeep: c_int = 3;
-    const key = GdnPreworkCfgKey{ .hk = in.hk, .hv = in.hv, .seq = in.seq, .c = c_dim, .qs = in.qkv_stride, .qo = in.qkv_off, .bs = in.b_stride, .bo = in.b_off, .as = in.a_stride, .ao = in.a_off };
+    const key = GdnPreworkCfgKey{ .hk = in.hk, .hv = in.hv, .seq = in.seq, .batch = in.batch, .c = c_dim, .qs = in.qkv_stride, .qo = in.qkv_off, .bs = in.b_stride, .bo = in.b_off, .as = in.a_stride, .ao = in.a_off };
     if (gdn_prework_cfg == null or !std.meta.eql(gdn_prework_cfg_key, key)) {
         if (gdn_prework_cfg) |c| _ = mlx.mlx_fast_metal_kernel_config_free(c);
         const config = mlx.mlx_fast_metal_kernel_config_new();
-        const q_shape = [_]c_int{ 1, in.seq, in.hk, in.dk };
-        const v_shape = [_]c_int{ 1, in.seq, in.hv, in.dv };
-        const st_shape = [_]c_int{ 1, nkeep, c_dim };
-        const g_shape = [_]c_int{ 1, in.seq, in.hv };
+        const q_shape = [_]c_int{ in.batch, in.seq, in.hk, in.dk };
+        const v_shape = [_]c_int{ in.batch, in.seq, in.hv, in.dv };
+        const st_shape = [_]c_int{ in.batch, nkeep, c_dim };
+        const g_shape = [_]c_int{ in.batch, in.seq, in.hv };
         try mlx.check(mlx.mlx_fast_metal_kernel_config_add_output_arg(config, &q_shape, 4, .bfloat16));
         try mlx.check(mlx.mlx_fast_metal_kernel_config_add_output_arg(config, &q_shape, 4, .bfloat16));
         try mlx.check(mlx.mlx_fast_metal_kernel_config_add_output_arg(config, &v_shape, 4, .bfloat16));
         try mlx.check(mlx.mlx_fast_metal_kernel_config_add_output_arg(config, &st_shape, 3, .bfloat16));
         try mlx.check(mlx.mlx_fast_metal_kernel_config_add_output_arg(config, &g_shape, 3, .bfloat16));
         try mlx.check(mlx.mlx_fast_metal_kernel_config_add_output_arg(config, &g_shape, 3, .bfloat16));
-        try mlx.check(mlx.mlx_fast_metal_kernel_config_set_grid(config, 32, in.seq, 2 * in.hk + in.hv));
+        try mlx.check(mlx.mlx_fast_metal_kernel_config_set_grid(config, 32, in.batch * in.seq, 2 * in.hk + in.hv));
         try mlx.check(mlx.mlx_fast_metal_kernel_config_set_thread_group(config, 32, 1, 1));
         try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_dtype(config, "T", .bfloat16));
         const ints = .{ .{ "HK", in.hk }, .{ "HV", in.hv }, .{ "DK", in.dk }, .{ "DV", in.dv }, .{ "NKEEP", nkeep }, .{ "C", c_dim }, .{ "S", in.seq }, .{ "QSTRIDE", in.qkv_stride }, .{ "QOFF", in.qkv_off }, .{ "BSTRIDE", in.b_stride }, .{ "BOFF", in.b_off }, .{ "ASTRIDE", in.a_stride }, .{ "AOFF", in.a_off } };
@@ -21196,7 +21218,7 @@ pub fn gdnPreworkFused(s: mlx.mlx_stream, in: GdnPreworkArgs) !?GdnPrework {
     try mlx.check(mlx.mlx_vector_array_get(&out.beta, outputs_vec, 5));
     if (!gdn_prework_engaged) {
         gdn_prework_engaged = true;
-        log.info("[gdn] packed prework engaged: Hk={d} Hv={d} S={d}\n", .{ in.hk, in.hv, in.seq });
+        log.info("[gdn] packed prework engaged: Hk={d} Hv={d} S={d} B={d}\n", .{ in.hk, in.hv, in.seq, in.batch });
     }
     return out;
 }
@@ -21234,7 +21256,7 @@ const GDN_NORMGATE_SOURCE =
 var gdn_normgate_kernel: ?mlx.mlx_fast_metal_kernel = null;
 var gdn_normgate_engaged: bool = false;
 var gdn_normgate_declined: bool = false;
-const GdnNormGateCfgKey = struct { hv: c_int, seq: c_int, zs: c_int, zo: c_int, swish: bool };
+const GdnNormGateCfgKey = struct { hv: c_int, seq: c_int, batch: c_int, zs: c_int, zo: c_int, swish: bool };
 var gdn_normgate_cfg: ?mlx.mlx_fast_metal_kernel_config = null;
 var gdn_normgate_cfg_key: GdnNormGateCfgKey = std.mem.zeroes(GdnNormGateCfgKey);
 
@@ -21252,10 +21274,10 @@ fn getGdnNormGateKernel() !mlx.mlx_fast_metal_kernel {
     return kernel;
 }
 
-/// `rms_norm(y) * silu(z)` flattened to [1, S, Hv*Dv]. Null → composed chain.
+/// `rms_norm(y) * silu(z)` flattened to [B, S, Hv*Dv]. Null → composed chain.
 pub fn gdnNormGateFused(
     s: mlx.mlx_stream,
-    y: mlx.mlx_array, // [1, S, Hv, Dv] bf16
+    y: mlx.mlx_array, // [B, S, Hv, Dv] bf16
     z: mlx.mlx_array, // rows of [.. ZOFF + Hv*Dv ..] bf16
     z_off: c_int,
     z_stride: c_int,
@@ -21264,10 +21286,11 @@ pub fn gdnNormGateFused(
     swish: bool, // true: silu(z) * y (qwen3.5); false: y * sigmoid(z) (qwen4_exp, KDA)
     hv: c_int,
     dv: c_int,
+    batch: c_int,
     seq: c_int,
 ) !?mlx.mlx_array {
     if (!gdnDecodeFusedEnabled()) return null;
-    if (dv != 128 or seq < 1 or seq > 9) return null;
+    if (dv != 128 or seq < 1 or seq > 9 or batch < 1 or batch * seq > GDN_FUSED_MAX_ROWS) return null;
     inline for (.{ y, z, norm_w }, 0..) |arr, i| {
         if (mlx.mlx_array_dtype(arr) != .bfloat16) {
             if (!gdn_normgate_declined) {
@@ -21279,20 +21302,20 @@ pub fn gdnNormGateFused(
     }
     const ysh = mlx.getShape(y);
     const zsh = mlx.getShape(z);
-    if (ysh.len != 4 or ysh[0] != 1 or ysh[1] != seq or ysh[2] != hv or ysh[3] != dv or zsh.len != 3 or zsh[1] != seq or zsh[2] != z_stride or z_off + hv * dv > z_stride) {
+    if (ysh.len != 4 or ysh[0] != batch or ysh[1] != seq or ysh[2] != hv or ysh[3] != dv or zsh.len != 3 or zsh[0] != batch or zsh[1] != seq or zsh[2] != z_stride or z_off + hv * dv > z_stride) {
         if (!gdn_normgate_declined) {
             gdn_normgate_declined = true;
             log.info("[gdn] fused norm-gate declined: y {any} z {any} z_off={d} z_stride={d} hv={d} dv={d} seq={d}\n", .{ ysh, zsh, z_off, z_stride, hv, dv, seq });
         }
         return null;
     }
-    const key = GdnNormGateCfgKey{ .hv = hv, .seq = seq, .zs = z_stride, .zo = z_off, .swish = swish };
+    const key = GdnNormGateCfgKey{ .hv = hv, .seq = seq, .batch = batch, .zs = z_stride, .zo = z_off, .swish = swish };
     if (gdn_normgate_cfg == null or !std.meta.eql(gdn_normgate_cfg_key, key)) {
         if (gdn_normgate_cfg) |c| _ = mlx.mlx_fast_metal_kernel_config_free(c);
         const config = mlx.mlx_fast_metal_kernel_config_new();
-        const out_shape = [_]c_int{ 1, seq, hv * dv };
+        const out_shape = [_]c_int{ batch, seq, hv * dv };
         try mlx.check(mlx.mlx_fast_metal_kernel_config_add_output_arg(config, &out_shape, 3, .bfloat16));
-        try mlx.check(mlx.mlx_fast_metal_kernel_config_set_grid(config, 32, seq, hv));
+        try mlx.check(mlx.mlx_fast_metal_kernel_config_set_grid(config, 32, batch * seq, hv));
         try mlx.check(mlx.mlx_fast_metal_kernel_config_set_thread_group(config, 32, 1, 1));
         try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_dtype(config, "T", .bfloat16));
         const ints = .{ .{ "HV", hv }, .{ "DV", dv }, .{ "ZSTRIDE", z_stride }, .{ "ZOFF", z_off } };
@@ -22943,14 +22966,22 @@ const HC_FUSED_N_SOURCE =
     \\uint lane = thread_index_in_simdgroup;
     \\uint sg = simdgroup_index_in_threadgroup;
     \\uint h = threadgroup_position_in_grid.x;
+    \\uint row = threadgroup_position_in_grid.y;
     \\threadgroup float tgs[8];
     \\threadgroup float tgi[8 * HC];
     \\const int base = int(h) * H;
     \\const int PER = H / 256;
+    \\// Rows (batch*seq) are independent: every per-row buffer is offset here once.
+    \\const device T* x = x_in + (size_t)row * (size_t)(HC * H);
+    \\device T* xn = xn_out + (size_t)row * (size_t)(HC * H);
+    \\device T* xs = xs_out + (WR ? (size_t)row * (size_t)(HC * H) : 0);
+    \\device float* ipart = ipart_out + (size_t)row * (size_t)(HC * HC);
+    \\const device T* wo = wo_in + (size_t)row * (size_t)H;
     \\float xv[PER];
     \\if (WR) {
     \\  // Pending hcWrite: stream' = T(stream + T(out * inj)), the chain's two roundings.
-    \\  float g = float(wi[h]);
+    \\  // (`wi_in` can be < 8 elements and land in `constant`: no pointer rebind.)
+    \\  float g = float(wi_in[(size_t)row * (size_t)HC + h]);
     \\  for (int i = 0; i < PER; ++i) {
     \\    int k = base + int(tid) + 256 * i;
     \\    T v = T(float(x[k]) + float(T(float(wo[k - base]) * g)));
@@ -22994,8 +23025,13 @@ const HC_FUSED_D_SOURCE =
     \\uint lane = thread_index_in_simdgroup;
     \\uint sg = simdgroup_index_in_threadgroup;
     \\uint n = threadgroup_position_in_grid.y;
+    \\uint row = threadgroup_position_in_grid.z;
     \\threadgroup float part[8];
     \\const int K = HC * H;
+    \\const device T* xn = xn_in + (size_t)row * (size_t)K;
+    \\const device float* ipart = ipart_in + (size_t)row * (size_t)(HC * HC);
+    \\device T* act = act_out + (size_t)row * (size_t)R;
+    \\device T* inj = inj_out + (size_t)row * (size_t)HC;
     \\const int VPW = 32 / BITS;
     \\const int K_by_p = K / VPW;
     \\const int K_by_gs = K / GS;
@@ -23047,6 +23083,10 @@ const HC_FUSED_D_SOURCE =
 const HC_FUSED_U_SOURCE =
     \\uint lane = thread_index_in_simdgroup;
     \\uint j = thread_position_in_grid.y;
+    \\uint row = thread_position_in_grid.z;
+    \\const device T* xn = xn_in + (size_t)row * (size_t)(HC * H);
+    \\const device T* act = act_in + (size_t)row * (size_t)R;
+    \\device T* mixed = mixed_out + (size_t)row * (size_t)H;
     \\const int VPW = 32 / BITS;
     \\const int R_by_p = R / VPW;
     \\const int R_by_gs = R / GS;
@@ -23084,7 +23124,7 @@ const HC_FUSED_U_SOURCE =
     \\if (lane == 0) mixed[j] = T(float(T(sum)) * float(T(1.0f / float(HC))));
 ;
 
-const HcFusedKey = struct { hc: c_int, h: c_int, r: c_int, inj: c_int, wr: c_int, bits: u32, gs: u32, dtype: mlx.mlx_dtype };
+const HcFusedKey = struct { hc: c_int, h: c_int, r: c_int, inj: c_int, wr: c_int, bits: u32, gs: u32, dtype: mlx.mlx_dtype, rows: c_int };
 var hc_fused_kernels: [3]?mlx.mlx_fast_metal_kernel = .{ null, null, null };
 var hc_fused_cfgs: [3]?mlx.mlx_fast_metal_kernel_config = .{ null, null, null };
 var hc_fused_key: HcFusedKey = std.mem.zeroes(HcFusedKey);
@@ -23105,12 +23145,12 @@ fn hcFusedEnabled() bool {
 
 fn getHcFusedKernel(which: usize) !mlx.mlx_fast_metal_kernel {
     if (hc_fused_kernels[which]) |k| return k;
-    const n_inputs = [_][*:0]const u8{ "x", "nw", "iw", "eps", "wo", "wi" };
-    const n_outputs = [_][*:0]const u8{ "xn", "ipart", "xs" };
-    const d_inputs = [_][*:0]const u8{ "xn", "dw_q", "dw_s", "dw_b", "ipart" };
-    const d_outputs = [_][*:0]const u8{ "act", "inj" };
-    const u_inputs = [_][*:0]const u8{ "xn", "act", "uw_q", "uw_s", "uw_b" };
-    const u_outputs = [_][*:0]const u8{"mixed"};
+    const n_inputs = [_][*:0]const u8{ "x_in", "nw", "iw", "eps", "wo_in", "wi_in" };
+    const n_outputs = [_][*:0]const u8{ "xn_out", "ipart_out", "xs_out" };
+    const d_inputs = [_][*:0]const u8{ "xn_in", "dw_q", "dw_s", "dw_b", "ipart_in" };
+    const d_outputs = [_][*:0]const u8{ "act_out", "inj_out" };
+    const u_inputs = [_][*:0]const u8{ "xn_in", "act_in", "uw_q", "uw_s", "uw_b" };
+    const u_outputs = [_][*:0]const u8{"mixed_out"};
     const inputs: []const [*:0]const u8 = switch (which) {
         0 => &n_inputs,
         1 => &d_inputs,
@@ -23152,23 +23192,29 @@ pub const HcFusedOut = struct { mixed: mlx.mlx_array, inj: mlx.mlx_array, stream
 /// A deferred `hcWrite`: the next read's N kernel applies `stream + out*inj`
 /// itself (one dispatch fewer per block). Handles are retained copies.
 pub const HcPending = struct {
-    out: mlx.mlx_array, // [1,1,hidden]
-    inj: mlx.mlx_array, // [1,1,hc,1]
+    out: mlx.mlx_array, // [B,S,hidden]
+    inj: mlx.mlx_array, // [B,S,hc,1]
     fn deinit(self: *HcPending) void {
         _ = mlx.mlx_array_free(self.out);
         _ = mlx.mlx_array_free(self.inj);
     }
 };
 
-/// Fused decode-width hyper-connection read. `x` holds exactly `hc*hidden`
-/// elements; `iw` is the row-major dense `[hc*hidden, hc]` inject weight or
-/// null-ctx (mixer). With `pend`, the read first applies that pending write
-/// and returns the written stream in `.stream` (null-ctx otherwise). Returns
-/// `mixed [1,1,hidden]` + `inj [1,1,hc,1]`, or null when the geometry/quant is
-/// outside the kernel (caller keeps the chain).
+/// Fused decode-width hyper-connection read over `batch*seq` rows (1..
+/// HC_FUSED_MAX_ROWS: decode, verify widths, batched slots — rows are
+/// independent, the grid carries them, weights are read once per row).
+/// `x` holds `batch*seq*hc*hidden` elements; `iw` is the row-major dense
+/// `[hc*hidden, hc]` inject weight or null-ctx (mixer). With `pend`, the read
+/// first applies that pending write and returns the written stream in
+/// `.stream` (null-ctx otherwise). Returns `mixed [B,S,hidden]` +
+/// `inj [B,S,hc,1]`, or null when the geometry/quant is outside the kernel
+/// (caller keeps the chain).
+pub const HC_FUSED_MAX_ROWS: c_int = 16;
 pub fn hcReadFused(
     s: mlx.mlx_stream,
     x: mlx.mlx_array,
+    batch: c_int,
+    seq: c_int,
     nw: mlx.mlx_array,
     dw: mlx.mlx_array,
     ds: mlx.mlx_array,
@@ -23187,6 +23233,8 @@ pub fn hcReadFused(
     if (!hcFusedEnabled()) return null;
     if (!mlx.streamIsGpu(s)) return null;
     if (bits != 2 and bits != 4 and bits != 8) return null;
+    const rows = batch * seq;
+    if (rows < 1 or rows > HC_FUSED_MAX_ROWS) return null;
     const vpw: c_int = @intCast(32 / bits);
     if (@rem(@as(c_int, @intCast(group_size)), vpw) != 0) return null;
     if (ds.ctx == null or db.ctx == null or us.ctx == null or ub.ctx == null) return null;
@@ -23195,7 +23243,7 @@ pub fn hcReadFused(
     if (mlx.mlx_array_dtype(nw) != xd) return null;
     const K: c_int = hc * hidden;
     if (hc < 1 or hc > 8 or hidden < 8 or @rem(hidden, 8) != 0 or @rem(hidden, vpw) != 0) return null;
-    if (mlx.mlx_array_size(x) != @as(usize, @intCast(K)) or mlx.mlx_array_size(nw) != @as(usize, @intCast(K))) return null;
+    if (mlx.mlx_array_size(x) != @as(usize, @intCast(rows * K)) or mlx.mlx_array_size(nw) != @as(usize, @intCast(K))) return null;
     const dsh = mlx.getShape(dw);
     const ush = mlx.getShape(uw);
     if (dsh.len != 2 or ush.len != 2) return null;
@@ -23210,7 +23258,7 @@ pub fn hcReadFused(
     const wr: c_int = @intFromBool(pend != null);
     if (pend) |pd| {
         if (mlx.mlx_array_dtype(pd.out) != xd or mlx.mlx_array_dtype(pd.inj) != xd) return null;
-        if (mlx.mlx_array_size(pd.out) != @as(usize, @intCast(hidden)) or mlx.mlx_array_size(pd.inj) != @as(usize, @intCast(hc))) return null;
+        if (mlx.mlx_array_size(pd.out) != @as(usize, @intCast(rows * hidden)) or mlx.mlx_array_size(pd.inj) != @as(usize, @intCast(rows * hc))) return null;
     }
     if (inj == 1) {
         if (mlx.mlx_array_dtype(iw) != xd) return null;
@@ -23218,21 +23266,21 @@ pub fn hcReadFused(
         if (ish.len != 2 or ish[0] != K or ish[1] != hc) return null;
     }
 
-    const key = HcFusedKey{ .hc = hc, .h = hidden, .r = R, .inj = inj, .wr = wr, .bits = bits, .gs = group_size, .dtype = xd };
+    const key = HcFusedKey{ .hc = hc, .h = hidden, .r = R, .inj = inj, .wr = wr, .bits = bits, .gs = group_size, .dtype = xd, .rows = rows };
     if (hc_fused_cfgs[0] == null or !std.meta.eql(hc_fused_key, key)) {
         for (&hc_fused_cfgs) |*c| if (c.*) |cfg| {
             _ = mlx.mlx_fast_metal_kernel_config_free(cfg);
             c.* = null;
         };
         const cn = mlx.mlx_fast_metal_kernel_config_new();
-        const k_shape = [_]c_int{K};
-        const hc_shape = [_]c_int{hc};
-        const hchc_shape = [_]c_int{hc * hc};
+        const k_shape = [_]c_int{rows * K};
+        const hc_shape = [_]c_int{rows * hc};
+        const hchc_shape = [_]c_int{rows * hc * hc};
         try mlx.check(mlx.mlx_fast_metal_kernel_config_add_output_arg(cn, &k_shape, 1, xd));
         try mlx.check(mlx.mlx_fast_metal_kernel_config_add_output_arg(cn, &hchc_shape, 1, .float32));
-        const xs_shape = [_]c_int{if (wr == 1) K else 1};
+        const xs_shape = [_]c_int{if (wr == 1) rows * K else 1};
         try mlx.check(mlx.mlx_fast_metal_kernel_config_add_output_arg(cn, &xs_shape, 1, xd));
-        try mlx.check(mlx.mlx_fast_metal_kernel_config_set_grid(cn, 256 * hc, 1, 1));
+        try mlx.check(mlx.mlx_fast_metal_kernel_config_set_grid(cn, 256 * hc, rows, 1));
         try mlx.check(mlx.mlx_fast_metal_kernel_config_set_thread_group(cn, 256, 1, 1));
         try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_dtype(cn, "T", xd));
         try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_int(cn, "HC", hc));
@@ -23241,10 +23289,10 @@ pub fn hcReadFused(
         try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_int(cn, "WR", wr));
         hc_fused_cfgs[0] = cn;
         const cd = mlx.mlx_fast_metal_kernel_config_new();
-        const act_shape = [_]c_int{R};
+        const act_shape = [_]c_int{rows * R};
         try mlx.check(mlx.mlx_fast_metal_kernel_config_add_output_arg(cd, &act_shape, 1, xd));
         try mlx.check(mlx.mlx_fast_metal_kernel_config_add_output_arg(cd, &hc_shape, 1, xd));
-        try mlx.check(mlx.mlx_fast_metal_kernel_config_set_grid(cd, 256, R + inj * hc, 1));
+        try mlx.check(mlx.mlx_fast_metal_kernel_config_set_grid(cd, 256, R + inj * hc, rows));
         try mlx.check(mlx.mlx_fast_metal_kernel_config_set_thread_group(cd, 256, 1, 1));
         try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_dtype(cd, "T", xd));
         try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_int(cd, "GS", gsi));
@@ -23254,9 +23302,9 @@ pub fn hcReadFused(
         try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_int(cd, "R", R));
         hc_fused_cfgs[1] = cd;
         const cu = mlx.mlx_fast_metal_kernel_config_new();
-        const mixed_shape = [_]c_int{hidden};
+        const mixed_shape = [_]c_int{rows * hidden};
         try mlx.check(mlx.mlx_fast_metal_kernel_config_add_output_arg(cu, &mixed_shape, 1, xd));
-        try mlx.check(mlx.mlx_fast_metal_kernel_config_set_grid(cu, 32, hidden, 1));
+        try mlx.check(mlx.mlx_fast_metal_kernel_config_set_grid(cu, 32, hidden, rows));
         try mlx.check(mlx.mlx_fast_metal_kernel_config_set_thread_group(cu, 32, 8, 1));
         try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_dtype(cu, "T", xd));
         try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_int(cu, "GS", gsi));
@@ -23323,13 +23371,13 @@ pub fn hcReadFused(
     const mixed_flat = u_out[0];
     defer _ = mlx.mlx_array_free(mixed_flat);
 
-    const mshape = [_]c_int{ 1, 1, hidden };
+    const mshape = [_]c_int{ batch, seq, hidden };
     var mixed = mlx.mlx_array_new();
     errdefer _ = mlx.mlx_array_free(mixed);
     try mlx.check(mlx.mlx_reshape(&mixed, mixed_flat, &mshape, 3, s));
     var inj_out = mlx.mlx_array{ .ctx = null };
     if (inj == 1) {
-        const ishape = [_]c_int{ 1, 1, hc, 1 };
+        const ishape = [_]c_int{ batch, seq, hc, 1 };
         inj_out = mlx.mlx_array_new();
         try mlx.check(mlx.mlx_reshape(&inj_out, inj_flat, &ishape, 4, s));
     }
@@ -27283,7 +27331,7 @@ test "fused hyper-connection read matches the op chain per element" {
     defer _ = mlx.mlx_array_free(ref_inj);
     try mlx.check(mlx.mlx_multiply(&ref_inj, isig, two, s));
 
-    const got = (try hcReadFused(s, x, nw, down.w, down.sc, down.bi, up.w, up.sc, up.bi, iw, eps, HC, H, bits, gs, null)) orelse return error.HcFusedDeclined;
+    const got = (try hcReadFused(s, x, 1, 1, nw, down.w, down.sc, down.bi, up.w, up.sc, up.bi, iw, eps, HC, H, bits, gs, null)) orelse return error.HcFusedDeclined;
     defer {
         _ = mlx.mlx_array_free(got.mixed);
         _ = mlx.mlx_array_free(got.inj);
@@ -27344,12 +27392,12 @@ test "fused hyper-connection read matches the op chain per element" {
     var ref_stream = mlx.mlx_array_new();
     defer _ = mlx.mlx_array_free(ref_stream);
     try mlx.check(mlx.mlx_reshape(&ref_stream, sum4, &flat_shape, 3, s));
-    const plain = (try hcReadFused(s, ref_stream, nw, down.w, down.sc, down.bi, up.w, up.sc, up.bi, iw, eps, HC, H, bits, gs, null)) orelse return error.HcFusedDeclined;
+    const plain = (try hcReadFused(s, ref_stream, 1, 1, nw, down.w, down.sc, down.bi, up.w, up.sc, up.bi, iw, eps, HC, H, bits, gs, null)) orelse return error.HcFusedDeclined;
     defer {
         _ = mlx.mlx_array_free(plain.mixed);
         _ = mlx.mlx_array_free(plain.inj);
     }
-    const pend = (try hcReadFused(s, x, nw, down.w, down.sc, down.bi, up.w, up.sc, up.bi, iw, eps, HC, H, bits, gs, .{ .out = wo, .inj = wi })) orelse return error.HcFusedDeclined;
+    const pend = (try hcReadFused(s, x, 1, 1, nw, down.w, down.sc, down.bi, up.w, up.sc, up.bi, iw, eps, HC, H, bits, gs, .{ .out = wo, .inj = wi })) orelse return error.HcFusedDeclined;
     defer {
         _ = mlx.mlx_array_free(pend.mixed);
         _ = mlx.mlx_array_free(pend.inj);
@@ -27359,6 +27407,60 @@ test "fused hyper-connection read matches the op chain per element" {
     try checkClose(allocator, s, ref_stream, pend.stream, @intCast(K));
     try checkClose(allocator, s, plain.mixed, pend.mixed, @intCast(H));
     try checkClose(allocator, s, plain.inj, pend.inj, @intCast(HC));
+
+    // Multi-row arm (verify widths / batched slots): the 3-row read is
+    // BIT-identical to the three single-row reads stacked, plain and
+    // pending, so an N>1 forward never changes what the N=1 path computed.
+    const x3 = try bf16Random(allocator, rnd, s, &.{ 1, 3, K }, 4.0, 0.0);
+    defer _ = mlx.mlx_array_free(x3);
+    const wo3 = try bf16Random(allocator, rnd, s, &.{ 1, 3, H }, 2.0, 0.0);
+    defer _ = mlx.mlx_array_free(wo3);
+    const wi3 = try bf16Random(allocator, rnd, s, &.{ 1, 3, HC, 1 }, 1.0, 1.0);
+    defer _ = mlx.mlx_array_free(wi3);
+    const rows3 = (try hcReadFused(s, x3, 1, 3, nw, down.w, down.sc, down.bi, up.w, up.sc, up.bi, iw, eps, HC, H, bits, gs, .{ .out = wo3, .inj = wi3 })) orelse return error.HcFusedDeclined;
+    defer {
+        _ = mlx.mlx_array_free(rows3.mixed);
+        _ = mlx.mlx_array_free(rows3.inj);
+        _ = mlx.mlx_array_free(rows3.stream);
+    }
+    const expectRowsExact = struct {
+        fn f(a: std.mem.Allocator, st: mlx.mlx_stream, stacked: mlx.mlx_array, single: mlx.mlx_array, row: usize, n: usize) !void {
+            const all = try a.alloc(f32, n * 3);
+            defer a.free(all);
+            const one = try a.alloc(f32, n);
+            defer a.free(one);
+            try testReadF32(stacked, all, st);
+            try testReadF32(single, one, st);
+            for (0..n) |i| if (all[row * n + i] != one[i]) {
+                std.debug.print("fused hc read rows: row {d} elem {d}: {d} vs {d}\n", .{ row, i, all[row * n + i], one[i] });
+                return error.HcFusedRowsNotBitIdentical;
+            };
+        }
+    }.f;
+    for (0..3) |r| {
+        const rc: c_int = @intCast(r);
+        const st3 = [_]c_int{ 1, 1, 1 };
+        var xr = mlx.mlx_array_new();
+        defer _ = mlx.mlx_array_free(xr);
+        try mlx.check(mlx.mlx_slice(&xr, x3, &[_]c_int{ 0, rc, 0 }, 3, &[_]c_int{ 1, rc + 1, K }, 3, &st3, 3, s));
+        var wor = mlx.mlx_array_new();
+        defer _ = mlx.mlx_array_free(wor);
+        try mlx.check(mlx.mlx_slice(&wor, wo3, &[_]c_int{ 0, rc, 0 }, 3, &[_]c_int{ 1, rc + 1, H }, 3, &st3, 3, s));
+        var wir = mlx.mlx_array_new();
+        defer _ = mlx.mlx_array_free(wir);
+        const st4 = [_]c_int{ 1, 1, 1, 1 };
+        try mlx.check(mlx.mlx_slice(&wir, wi3, &[_]c_int{ 0, rc, 0, 0 }, 4, &[_]c_int{ 1, rc + 1, HC, 1 }, 4, &st4, 4, s));
+        const one = (try hcReadFused(s, xr, 1, 1, nw, down.w, down.sc, down.bi, up.w, up.sc, up.bi, iw, eps, HC, H, bits, gs, .{ .out = wor, .inj = wir })) orelse return error.HcFusedDeclined;
+        defer {
+            _ = mlx.mlx_array_free(one.mixed);
+            _ = mlx.mlx_array_free(one.inj);
+            _ = mlx.mlx_array_free(one.stream);
+        }
+        try expectRowsExact(allocator, s, rows3.mixed, one.mixed, r, @intCast(H));
+        try expectRowsExact(allocator, s, rows3.inj, one.inj, r, @intCast(HC));
+        try expectRowsExact(allocator, s, rows3.stream, one.stream, r, @intCast(K));
+    }
+    try testing.expect((try hcReadFused(s, x3, 1, 17, nw, down.w, down.sc, down.bi, up.w, up.sc, up.bi, iw, eps, HC, H, bits, gs, null)) == null);
 }
 
 test "fused gate+up+SwiGLU expert kernel is bit-identical to the split gatherQmv path" {
@@ -35394,6 +35496,73 @@ test "gdn packed prework: bit-identical to the composed chain at S 1..9 incl. ga
         inline for (.{ .{ pre.q, pre2.q }, .{ pre.k, pre2.k }, .{ pre.v, pre2.v }, .{ pre.conv_state, pre2.conv_state }, .{ pre.g, pre2.g }, .{ pre.beta, pre2.beta } }) |pair| {
             try std.testing.expectEqual(@as(f32, 0.0), try attn256MaxDiff(pair[0], pair[1], s));
         }
+
+        // Batched arm (B=2 merged slots): row 0 of the batched outputs is
+        // bit-identical to the single-batch outputs above; row 1 to a
+        // second slot's own single-batch run.
+        if (seq <= 8) {
+            const qkv_b = try attn256RandBf16(rnd, &qkv_shape, s);
+            defer _ = mlx.mlx_array_free(qkv_b);
+            const st_b = try attn256RandBf16(rnd, &st_shape, s);
+            defer _ = mlx.mlx_array_free(st_b);
+            const b_b = try attn256RandBf16Scaled(rnd, &ba_shape, 16.0, s);
+            defer _ = mlx.mlx_array_free(b_b);
+            const a_b = try attn256RandBf16Scaled(rnd, &ba_shape, 16.0, s);
+            defer _ = mlx.mlx_array_free(a_b);
+            const cat0 = struct {
+                fn f(st: mlx.mlx_stream, x0: mlx.mlx_array, x1: mlx.mlx_array) !mlx.mlx_array {
+                    const arr = [_]mlx.mlx_array{ x0, x1 };
+                    const vec = mlx.mlx_vector_array_new_data(&arr, 2);
+                    defer _ = mlx.mlx_vector_array_free(vec);
+                    var out = mlx.mlx_array_new();
+                    try mlx.check(mlx.mlx_concatenate_axis(&out, vec, 0, st));
+                    return out;
+                }
+            }.f;
+            const row0 = struct {
+                fn f(st: mlx.mlx_stream, x: mlx.mlx_array, i: c_int) !mlx.mlx_array {
+                    const sh = mlx.getShape(x);
+                    var start: [4]c_int = .{ i, 0, 0, 0 };
+                    var stop: [4]c_int = .{ i + 1, 0, 0, 0 };
+                    const strides: [4]c_int = .{ 1, 1, 1, 1 };
+                    for (1..sh.len) |d| stop[d] = sh[d];
+                    _ = &start;
+                    var out = mlx.mlx_array_new();
+                    try mlx.check(mlx.mlx_slice(&out, x, &start, @intCast(sh.len), &stop, @intCast(sh.len), &strides, @intCast(sh.len), st));
+                    return out;
+                }
+            }.f;
+            const qkv2 = try cat0(s, qkv, qkv_b);
+            defer _ = mlx.mlx_array_free(qkv2);
+            const st2 = try cat0(s, conv_state, st_b);
+            defer _ = mlx.mlx_array_free(st2);
+            const b2 = try cat0(s, b_in, b_b);
+            defer _ = mlx.mlx_array_free(b2);
+            const a2 = try cat0(s, a_in, a_b);
+            defer _ = mlx.mlx_array_free(a2);
+            var args_b = GdnPreworkArgs{ .qkv = qkv2, .qkv_off = 0, .qkv_stride = c_dim, .b = b2, .b_off = 0, .b_stride = hv, .a = a2, .a_off = 0, .a_stride = hv, .A_log = A_log, .dt_bias = dt_bias, .conv_state = st2, .conv_w = conv_w, .q_scale = q_scale, .k_scale = k_scale, .hk = hk, .hv = hv, .dk = dk, .dv = dv, .seq = seq, .batch = 2 };
+            const preb = (try gdnPreworkFused(s, args_b)) orelse return error.FusedDeclined;
+            defer inline for (.{ preb.q, preb.k, preb.v, preb.conv_state, preb.g, preb.beta }) |arr| {
+                _ = mlx.mlx_array_free(arr);
+            };
+            args_b.qkv = qkv_b;
+            args_b.conv_state = st_b;
+            args_b.b = b_b;
+            args_b.a = a_b;
+            args_b.batch = 1;
+            const pre_b1 = (try gdnPreworkFused(s, args_b)) orelse return error.FusedDeclined;
+            defer inline for (.{ pre_b1.q, pre_b1.k, pre_b1.v, pre_b1.conv_state, pre_b1.g, pre_b1.beta }) |arr| {
+                _ = mlx.mlx_array_free(arr);
+            };
+            inline for (.{ .{ preb.q, pre.q, pre_b1.q }, .{ preb.k, pre.k, pre_b1.k }, .{ preb.v, pre.v, pre_b1.v }, .{ preb.conv_state, pre.conv_state, pre_b1.conv_state }, .{ preb.g, pre.g, pre_b1.g }, .{ preb.beta, pre.beta, pre_b1.beta } }) |tri| {
+                const r0 = try row0(s, tri[0], 0);
+                defer _ = mlx.mlx_array_free(r0);
+                const r1 = try row0(s, tri[0], 1);
+                defer _ = mlx.mlx_array_free(r1);
+                try std.testing.expectEqual(@as(f32, 0.0), try attn256MaxDiff(r0, tri[1], s));
+                try std.testing.expectEqual(@as(f32, 0.0), try attn256MaxDiff(r1, tri[2], s));
+            }
+        }
     }
 
     // Decline gates: S outside 1..9, non-128 head dims, S < 3 with the
@@ -35486,7 +35655,7 @@ test "gdn norm-gate fused: bit-identical to rms_norm + silu(z) * y at S 1..9, z 
         defer _ = mlx.mlx_array_free(sig);
         try mlx.check(mlx.mlx_sigmoid(&sig, z_heads, s));
         for ([_]bool{ true, false }) |swish| {
-            const fused = (try gdnNormGateFused(s, y, raw, z_off, width, norm_w, eps_arr, swish, hv, dv, seq)) orelse return error.FusedDeclined;
+            const fused = (try gdnNormGateFused(s, y, raw, z_off, width, norm_w, eps_arr, swish, hv, dv, 1, seq)) orelse return error.FusedDeclined;
             defer _ = mlx.mlx_array_free(fused);
             var gated = mlx.mlx_array_new();
             defer _ = mlx.mlx_array_free(gated);
@@ -35513,7 +35682,7 @@ test "gdn norm-gate fused: bit-identical to rms_norm + silu(z) * y at S 1..9, z 
     const z_shape = [_]c_int{ 1, 1, value_dim };
     const z = try attn256RandBf16(rnd, &z_shape, s);
     defer _ = mlx.mlx_array_free(z);
-    try std.testing.expect((try gdnNormGateFused(s, y, z, 0, value_dim, norm_w, eps_arr, true, hv, dv, 1)) == null);
+    try std.testing.expect((try gdnNormGateFused(s, y, z, 0, value_dim, norm_w, eps_arr, true, hv, dv, 1, 1)) == null);
 }
 
 test "qk norm rope fused hd-256: bit-identical at qwen 24q/4kv rd=64, S 1..16 incl. strided q" {
@@ -37058,7 +37227,7 @@ test "qwen4 fixture: full prefill, chunked prefill + decode past the QSA budget 
             const next_ids = mlx.mlx_array_new_data(@ptrCast(ids_src + 1), &tshape, 2, .int32);
             defer _ = mlx.mlx_array_free(next_ids);
             try xfm.qwen4MtpReset();
-            const mo = try xfm.qwen4MtpForward(stream_prev, next_ids, 1);
+            const mo = try xfm.qwen4MtpForward(stream_prev, next_ids, 1, null);
             defer _ = mlx.mlx_array_free(mo.logits);
             defer _ = mlx.mlx_array_free(mo.stream);
             const ours_m = try qwen4ReadF32(allocator, mo.logits, s);
@@ -37328,7 +37497,7 @@ test "qwen4 fixture: full prefill, chunked prefill + decode past the QSA budget 
             defer _ = mlx.mlx_array_free(hp);
             const tp = H.ids(ids_src[1..P]);
             defer _ = mlx.mlx_array_free(tp);
-            const o = try xfm.qwen4MtpForward(hp, tp, 1);
+            const o = try xfm.qwen4MtpForward(hp, tp, 1, null);
             _ = mlx.mlx_array_free(o.logits);
             _ = mlx.mlx_array_free(o.stream);
         }
@@ -37380,12 +37549,12 @@ test "qwen4 fixture: full prefill, chunked prefill + decode past the QSA budget 
                     _ = mlx.mlx_array_free(stash_h.?);
                     stash_h = null;
                     stash_ids.clearRetainingCapacity();
-                    break :blk try xfm.qwen4MtpForward(mh, mids, @intCast(stash_off0 + 1));
+                    break :blk try xfm.qwen4MtpForward(mh, mids, @intCast(stash_off0 + 1), null);
                 } else blk: {
                     const one = [_]i32{prev_tok};
                     const tid = H.ids(&one);
                     defer _ = mlx.mlx_array_free(tid);
-                    break :blk try xfm.qwen4MtpForward(if (i == 0) last_hidden else h_chain.?, tid, @intCast(off0 + i + 1));
+                    break :blk try xfm.qwen4MtpForward(if (i == 0) last_hidden else h_chain.?, tid, @intCast(off0 + i + 1), null);
                 };
                 if (h_chain) |a| _ = mlx.mlx_array_free(a);
                 h_chain = try H.rows(s, o.stream, @intCast(mlx.getShape(o.stream)[1] - 1), @intCast(mlx.getShape(o.stream)[1]));
@@ -37443,7 +37612,7 @@ test "qwen4 fixture: full prefill, chunked prefill + decode past the QSA budget 
             defer _ = mlx.mlx_array_free(mids);
             const mh = try H.cat(s, &.{ stash_h.?, last_hidden });
             defer _ = mlx.mlx_array_free(mh);
-            const o = try xfm.qwen4MtpForward(mh, mids, @intCast(stash_off0 + 1));
+            const o = try xfm.qwen4MtpForward(mh, mids, @intCast(stash_off0 + 1), null);
             _ = mlx.mlx_array_free(o.stream);
             last_logits = o.logits;
         }
@@ -37459,7 +37628,7 @@ test "qwen4 fixture: full prefill, chunked prefill + decode past the QSA budget 
         const fids = H.ids(fresh_ids.items);
         defer _ = mlx.mlx_array_free(fids);
         try testing.expectEqual(@as(c_int, @intCast(fresh_ids.items.len)), mlx.getShape(fh)[1]);
-        const fo = try xfm.qwen4MtpForward(fh, fids, 1);
+        const fo = try xfm.qwen4MtpForward(fh, fids, 1, null);
         defer _ = mlx.mlx_array_free(fo.logits);
         defer _ = mlx.mlx_array_free(fo.stream);
         const fresh_x = try qwen4ReadF32(allocator, fo.logits, s);

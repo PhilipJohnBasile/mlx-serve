@@ -2758,7 +2758,22 @@ pub fn prefillTransientReserve(config: *const model_mod.ModelConfig, kv_bits: u6
         config.prefillAttnKeys(chunk),
         prefillStreamBytesPerToken(config),
         prefillDequantWeightBytes(config),
-    );
+    ) + qsaMaskBytes(config, chunk, chunk);
+}
+
+/// Bytes per (query, key) the QSA prefill holds for ONE live layer past the
+/// indexer budget: the `[S, kv]` bool mask, its additive copy for the sdpa
+/// arm, and the f32 indexer scores over kv/4 blocks (4 bytes/block = 1/key).
+const QSA_MASK_BYTES_PER_KEY: u64 = 4;
+
+/// qwen4_exp sparse attention materializes a `[S, kv]` mask per layer that
+/// no envelope term models: 4096 x 25k keys = 410 MB, and a tight box met it
+/// as a Metal OOM at 25k+. Zero for every arch without an indexer. The sizer
+/// bills it at kv = chunk (no prompt yet); the admission guard at the real
+/// prompt length.
+pub fn qsaMaskBytes(config: *const model_mod.ModelConfig, fwd: u64, kv: u64) u64 {
+    if (config.indexer_budget == 0) return 0;
+    return QSA_MASK_BYTES_PER_KEY * fwd * kv * 5 / 4;
 }
 
 /// The ANE admission gate's headroom for THIS model at THIS chunk: the KV
@@ -3140,7 +3155,8 @@ fn checkAttentionMemory(allocator: std.mem.Allocator, stream: *Conn, prompt_len:
     const needed: u64 = if (is_dsv4)
         dsv4PrefillMemoryNeeded(seq, layers, kv_heads * hdim, hidden, ffn, dsv4_mod.prefillSub(), config.prefillAttnKeys(seq))
     else
-        prefillMemoryNeeded(seq, heads, kv_heads, config.kvBytesPerToken(), hdim, config.prefillScoreHeadDim(), hidden, ffn, kv_bits, chunk, config.prefillAttnKeys(seq), prefillStreamBytesPerToken(config), prefillDequantWeightBytes(config));
+        prefillMemoryNeeded(seq, heads, kv_heads, config.kvBytesPerToken(), hdim, config.prefillScoreHeadDim(), hidden, ffn, kv_bits, chunk, config.prefillAttnKeys(seq), prefillStreamBytesPerToken(config), prefillDequantWeightBytes(config)) +
+        qsaMaskBytes(config, @min(chunk, @max(seq, 1)), seq);
 
     // Available = GPU allocation ceiling minus current usage (model weights,
     // resident hot-cache KV, etc.). The ceiling is the LESSER of Metal's static
@@ -3319,6 +3335,28 @@ const TextGenTarget = struct {
 /// detected BOTH pre-load (discovery arch_hint) and post-load (engine
 /// slots) — either alone has gaps: `--model` primaries carry no hint,
 /// engines exist only while resident.
+/// A request carrying images/video/audio on a model serving WITHOUT its tower
+/// (`--no-vision`, or a checkpoint with no vision weights) is refused by name.
+/// Before this the media parts were parsed and then silently dropped — the
+/// model answered the text alone (a 200 with a hallucinated "Sky" for a house).
+fn mediaRejectReason(messages: []const chat_mod.Message) ?[]const u8 {
+    for (messages) |m| {
+        if (m.images != null or m.videos != null) return "This model is serving without its vision tower (--no-vision or no vision weights); image/video content is not supported";
+        if (m.audio != null) return "This model is serving without its audio embedder; input_audio content is not supported";
+    }
+    return null;
+}
+
+test "mediaRejectReason: media on a tower-less model is refused by name, text passes" {
+    const t = std.testing;
+    const text = [_]chat_mod.Message{.{ .role = "user", .content = "hi" }};
+    try t.expect(mediaRejectReason(&text) == null);
+    const img = [_]chat_mod.Message{ .{ .role = "user", .content = "hi" }, .{ .role = "user", .content = "look", .images = &[_]chat_mod.ImageData{} } };
+    try t.expect(std.mem.indexOf(u8, mediaRejectReason(&img).?, "vision tower") != null);
+    const aud = [_]chat_mod.Message{.{ .role = "user", .content = "listen", .audio = &[_]chat_mod.AudioData{} }};
+    try t.expect(std.mem.indexOf(u8, mediaRejectReason(&aud).?, "audio") != null);
+}
+
 fn textGenRejectReason(t: TextGenTarget) ?[]const u8 {
     if (t.is_encoder_only) return "Encoder-only models do not support text generation. Use /v1/embeddings instead.";
     const modality: ?media_mod.Modality = blk: {
@@ -5420,6 +5458,11 @@ fn handleChatCompletions(
             allocator.free(prompt_ids_raw);
             prompt_ids_raw = new_ids;
         }
+    } else if (mediaRejectReason(messages.items)) |reason| {
+        allocator.free(prompt_ids_raw);
+        log.warn("POST /v1/chat/completions -> 400 ({s})\n", .{reason});
+        try sendErrorResponse(allocator, stream, "400 Bad Request", "invalid_request_error", reason, 400);
+        return;
     }
     const prompt_ids = prompt_ids_raw;
     defer allocator.free(prompt_ids);
@@ -11114,6 +11157,11 @@ fn handleAnthropicMessages(
             allocator.free(prompt_ids_raw);
             prompt_ids_raw = new_ids;
         }
+    } else if (mediaRejectReason(messages.items)) |reason| {
+        allocator.free(prompt_ids_raw);
+        log.warn("POST /v1/messages -> 400 ({s})\n", .{reason});
+        try sendAnthropicError(allocator, stream, "invalid_request_error", reason, 400);
+        return;
     }
     const prompt_ids = prompt_ids_raw;
     defer allocator.free(prompt_ids);
@@ -12690,6 +12738,11 @@ fn handleResponses(
             allocator.free(prompt_ids_raw);
             prompt_ids_raw = new_ids;
         }
+    } else if (mediaRejectReason(pi.messages.items)) |reason| {
+        allocator.free(prompt_ids_raw);
+        log.warn("POST /v1/responses -> 400 ({s})\n", .{reason});
+        try sendErrorResponse(allocator, stream, "400 Bad Request", "invalid_request_error", reason, 400);
+        return;
     }
     const prompt_ids = prompt_ids_raw;
     defer allocator.free(prompt_ids);
@@ -16690,6 +16743,32 @@ test "resolvePrefillChunk: a squeezed box steps the chunk down; a roomy one keep
         try t.expect(c >= generate_mod.PREFILL_CHUNK_FLOOR);
         prev = c;
     }
+}
+
+test "qsaMaskBytes: a qwen4_exp twin bills the QSA mask and steps a rung the qwen3_5 twin keeps" {
+    const t = std.testing;
+    var twin = model_mod.ModelConfig{};
+    twin.num_hidden_layers = 40;
+    twin.num_attention_heads = 24;
+    twin.num_key_value_heads = 2;
+    twin.head_dim = 256;
+    twin.hidden_size = 2560;
+    twin.intermediate_size = 9216;
+    twin.intermediate_size_declared = true;
+    twin.quant_bits = 4;
+    twin.max_position_embeddings = 262144;
+    var q4 = twin;
+    q4.indexer_budget = 2048;
+    try t.expectEqual(@as(u64, 0), qsaMaskBytes(&twin, 4096, 25000));
+    try t.expectEqual(@as(u64, 4 * 4096 * 25000 * 5 / 4), qsaMaskBytes(&q4, 4096, 25000));
+    const twin_bill = prefillTransientReserve(&twin, 16, 8192);
+    const q4_bill = prefillTransientReserve(&q4, 16, 8192);
+    try t.expectEqual(twin_bill + qsaMaskBytes(&q4, 8192, 8192), q4_bill);
+    // A ceiling whose quarter-share sits between the two bills at 8192.
+    const weights: u64 = 70_000_000_000;
+    const ceiling = weights + (twin_bill + q4_bill) / 2 * 4;
+    try t.expectEqual(@as(u32, 8192), resolvePrefillChunk(&twin, 16, ceiling, weights, 0));
+    try t.expectEqual(@as(u32, 4096), resolvePrefillChunk(&q4, 16, ceiling, weights, 0));
 }
 
 test "resolvePrefillChunk: the sizer and the guard bill the chunk that was pinned" {
