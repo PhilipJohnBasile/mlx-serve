@@ -2,6 +2,7 @@ const std = @import("std");
 const mlx = @import("mlx.zig");
 const log = @import("log.zig");
 const tokenizer_mod = @import("tokenizer.zig");
+const safetensors_manifest = @import("safetensors_manifest.zig");
 
 pub const HiddenAct = enum { gelu_approx, silu, relu_sq };
 
@@ -3148,7 +3149,8 @@ fn loadWeightsOpt(io: std.Io, allocator: std.mem.Allocator, model_dir: []const u
     return loadWeightsFromOpenDir(io, allocator, dir, model_dir, load_vision);
 }
 
-/// Load every `*.safetensors` in an already-open `dir` into a Weights map.
+/// Load the checkpoint selected by a valid safetensors index, or every root
+/// `*.safetensors` when no trustworthy index exists, into a Weights map.
 /// `model_dir` is the on-disk path string, used both to build the per-file
 /// absolute path for `mlx_load_safetensors` and to phrase the error message.
 /// Split out of `loadWeightsOpt` so the incomplete-checkpoint guard below is
@@ -3161,22 +3163,23 @@ fn loadWeightsFromOpenDir(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.
     defer _ = mlx.mlx_stream_free(s);
 
     var file_count: u32 = 0;
-    var it = dir.iterate();
-    while (try it.next(io)) |entry| {
-        // Accept regular files AND symlinks: HuggingFace cache snapshots store
-        // every weight file as a symlink into ../../blobs/<hash>. mlx_load_safetensors
-        // resolves the link at the OS level, so a symlinked *.safetensors loads fine.
-        if (entry.kind != .file and entry.kind != .sym_link) continue;
-        if (!std.mem.endsWith(u8, entry.name, ".safetensors")) continue;
-
-        const path_slice = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ model_dir, entry.name });
-        defer allocator.free(path_slice);
-        const path = try allocator.dupeSentinel(u8, path_slice, 0);
-        defer allocator.free(path);
-
-        log.info("Loading {s}...\n", .{entry.name});
-        try loadSafetensorsFile(allocator, &weights, path, s, load_vision);
-        file_count += 1;
+    if (safetensors_manifest.indexedRootFiles(io, allocator, dir)) |selection_value| {
+        var selection = selection_value;
+        defer selection.deinit();
+        for (selection.names) |name| {
+            try loadRootSafetensorsFile(allocator, &weights, model_dir, name, s, load_vision);
+            file_count += 1;
+        }
+    } else {
+        var it = dir.iterate();
+        while (try it.next(io)) |entry| {
+            // Accept regular files AND symlinks: HuggingFace cache snapshots
+            // store every weight file as a symlink into ../../blobs/<hash>.
+            if (entry.kind != .file and entry.kind != .sym_link) continue;
+            if (!std.mem.endsWith(u8, entry.name, ".safetensors")) continue;
+            try loadRootSafetensorsFile(allocator, &weights, model_dir, entry.name, s, load_vision);
+            file_count += 1;
+        }
     }
 
     // Incomplete-checkpoint guard. A dir with config/tokenizer but no (or no
@@ -3195,6 +3198,23 @@ fn loadWeightsFromOpenDir(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.
     log.info("Loaded {d} weights from {d} file(s)\n", .{ weights.count(), file_count });
     reportF16Narrowing();
     return weights;
+}
+
+fn loadRootSafetensorsFile(
+    allocator: std.mem.Allocator,
+    weights: *Weights,
+    model_dir: []const u8,
+    name: []const u8,
+    stream: mlx.mlx_stream,
+    load_vision: bool,
+) !void {
+    const path_slice = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ model_dir, name });
+    defer allocator.free(path_slice);
+    const path = try allocator.dupeSentinel(u8, path_slice, 0);
+    defer allocator.free(path);
+
+    log.info("Loading {s}...\n", .{name});
+    try loadSafetensorsFile(allocator, weights, path, stream, load_vision);
 }
 
 /// Whether a just-loaded f16 tensor must be narrowed to the engine's bf16
@@ -3424,6 +3444,46 @@ test "loadWeights casts f16 quant scales/biases to bf16 (mixed-dtype qmm slow-pa
     // quant side tensors force the mixed-dtype qmm path).
     try testing.expectEqual(mlx.mlx_dtype.float16, mlx.mlx_array_dtype(weights.get("model.layers.0.mlp.up_proj.weight").?));
     try testing.expectEqual(mlx.mlx_dtype.bfloat16, mlx.mlx_array_dtype(weights.get("model.layers.0.mlp.down_proj.scales").?));
+}
+
+test "loadWeights honors the checkpoint index instead of loading obsolete root weights" {
+    const allocator = testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &path_buf);
+    const dir_path = path_buf[0..root_len];
+    const save = struct {
+        fn one(a: std.mem.Allocator, dir: []const u8, name: []const u8, value: f32) !void {
+            const path = try std.fmt.allocPrintSentinel(a, "{s}/{s}", .{ dir, name }, 0);
+            defer a.free(path);
+            const map = mlx.mlx_map_string_to_array_new();
+            defer _ = mlx.mlx_map_string_to_array_free(map);
+            const meta = mlx.mlx_map_string_to_string_new();
+            defer _ = mlx.mlx_map_string_to_string_free(meta);
+            const arr = mlx.mlx_array_new_float(value);
+            defer _ = mlx.mlx_array_free(arr);
+            _ = mlx.mlx_map_string_to_array_insert(map, "model.test.weight", arr);
+            try mlx.check(mlx.mlx_save_safetensors(path.ptr, map, meta));
+        }
+    }.one;
+
+    try save(allocator, dir_path, "model.safetensors", 1.0);
+    try save(allocator, dir_path, "zzz-obsolete.safetensors", 2.0);
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "model.safetensors.index.json",
+        .data = "{\"weight_map\":{\"model.test.weight\":\"model.safetensors\"}}",
+    });
+
+    var weights = try loadWeights(io, allocator, dir_path);
+    defer weights.deinit();
+    const selected = weights.get("model.test.weight").?;
+    try mlx.check(mlx.mlx_array_eval(selected));
+    var got: f32 = 0;
+    try mlx.check(mlx.mlx_array_item_float32(&got, selected));
+    try testing.expectEqual(@as(f32, 1.0), got);
 }
 
 test "loadWeights on a weightless dir (incomplete download) errors clearly, not empty map" {

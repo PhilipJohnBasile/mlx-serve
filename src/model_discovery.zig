@@ -14,6 +14,7 @@
 
 const std = @import("std");
 const log = @import("log.zig");
+const safetensors_manifest = @import("safetensors_manifest.zig");
 // Only the pure JSON contract predicate is referenced — lazy analysis keeps
 // dflash.zig's mlx FFI out of this filesystem-only module.
 const dflash = @import("dflash.zig");
@@ -482,8 +483,9 @@ pub const DiscoveredModel = struct {
     id: []const u8,
     /// Absolute path to the model directory.
     path: []const u8,
-    /// Approximate weight size on disk in bytes (sum of *.safetensors). Used
-    /// later by eviction; null if scan failed.
+    /// Approximate active-checkpoint weight size in bytes. Uses the safetensors
+    /// index when valid, otherwise every root weight file. Used later by
+    /// eviction; null if scanning failed.
     bytes_on_disk: ?u64,
     /// `model_type` peeked from config.json (e.g. "bert"), so registry stubs
     /// can advertise arch-derived capabilities before a cold load. Empty
@@ -835,21 +837,15 @@ fn tryAddModel(
         }
     }
 
-    // Compute weight bytes (sum of *.safetensors sizes) — best-effort.
-    // GGUF entries already carry the picked file's size instead.
+    // Compute the active checkpoint's weight bytes. A valid safetensors index
+    // is authoritative: repos can retain obsolete or alternate weight files
+    // beside the checkpoint, and billing those files can trigger false
+    // resident-memory evictions (#274). GGUF entries already carry the picked
+    // file's size instead.
     if (!bytes_ok) {
-        var sub_iter_dir = parent.openDir(io, name, .{ .iterate = true }) catch null;
-        if (sub_iter_dir) |*sd| {
-            defer sd.close(io);
-            var sd_iter = sd.iterate();
-            while (sd_iter.next(io) catch null) |sub_entry| {
-                if (sub_entry.kind != .file and sub_entry.kind != .sym_link) continue;
-                if (!std.mem.endsWith(u8, sub_entry.name, ".safetensors")) continue;
-                const st = sd.statFile(io, sub_entry.name, .{}) catch continue;
-                if (st.kind != .file) continue;
-                bytes += @intCast(st.size);
-                bytes_ok = true;
-            }
+        if (checkpointWeightBytes(io, allocator, sub)) |checkpoint_bytes| {
+            bytes = checkpoint_bytes;
+            bytes_ok = true;
         }
         // A diffusers-shaped repo (MageFlow) holds NO weights at its root —
         // they live one level down in transformer/, text_encoder/, vae/. Only
@@ -875,6 +871,11 @@ fn tryAddModel(
     });
     return true;
 }
+
+/// Weight bytes for the checkpoint the model index selects. Missing or invalid
+/// indexes fall back to every root safetensors file, preserving legacy behavior
+/// without ever trusting a partial manifest. Symlink targets count by real size.
+pub const checkpointWeightBytes = safetensors_manifest.checkpointWeightBytes;
 
 /// Sum `*.safetensors` one level below `parent/name` (the component subdirs of
 /// a diffusers repo). Returns true when anything was found. Best-effort: any
@@ -968,22 +969,13 @@ pub fn probeModelDir(io: std.Io, allocator: std.mem.Allocator, abs_path: []const
         if (!present) return error.IncompleteMediaPack;
     }
 
-    var bytes: u64 = 0;
-    var bytes_ok = false;
     var sub = dir.openDir(io, base, .{ .iterate = true }) catch null;
+    var checkpoint_bytes: ?u64 = null;
     if (sub) |*sd| {
         defer sd.close(io);
-        var it = sd.iterate();
-        while (it.next(io) catch null) |entry| {
-            if (entry.kind != .file and entry.kind != .sym_link) continue;
-            if (!std.mem.endsWith(u8, entry.name, ".safetensors")) continue;
-            const st = sd.statFile(io, entry.name, .{}) catch continue;
-            if (st.kind != .file) continue;
-            bytes += @intCast(st.size);
-            bytes_ok = true;
-        }
+        checkpoint_bytes = checkpointWeightBytes(io, allocator, sd.*);
     }
-    return .{ .model_type = model_type, .bytes_on_disk = if (bytes_ok) bytes else null };
+    return .{ .model_type = model_type, .bytes_on_disk = checkpoint_bytes };
 }
 
 /// Metadata an `unloaded` stub can advertise via `/v1/models` without faulting
@@ -1294,6 +1286,84 @@ test "discovery measures a SYMLINKED (HF hub cache) model dir's real bytes" {
     try testing.expectEqual(@as(usize, 1), result.models.len);
     try testing.expectEqualStrings("org/snap-model", result.models[0].id);
     try testing.expectEqual(@as(?u64, 10), result.models[0].bytes_on_disk);
+}
+
+test "discovery and probe bill only safetensors selected by the checkpoint index" {
+    const io = std.testing.io;
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    // Some Hub repos retain obsolete or alternate weight files beside the
+    // active checkpoint. The index is the loader manifest, so those unrelated
+    // files must not inflate the scheduler's resident-memory estimate (#274).
+    try tmp.dir.createDirPath(io, "org/indexed-model");
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "org/indexed-model/config.json",
+        .data = "{\"model_type\":\"qwen3\"}",
+    });
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "org/indexed-model/model.safetensors.index.json",
+        .data =
+        \\{"weight_map":{"a.weight":"model.safetensors","b.weight":"model.safetensors"}}
+        ,
+    });
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "org/indexed-model/model.safetensors",
+        .data = "0123456789",
+    });
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "org/indexed-model/model-00001-of-00002.safetensors",
+        .data = "obsolete",
+    });
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "org/indexed-model/model-00002-of-00002.safetensors",
+        .data = "unused",
+    });
+
+    var result = try discoverModelsInDir(io, allocator, tmp.dir, "/root");
+    defer result.deinit();
+    try testing.expectEqual(@as(usize, 1), result.models.len);
+    try testing.expectEqual(@as(?u64, 10), result.models[0].bytes_on_disk);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &path_buf);
+    const abs = try std.fmt.allocPrint(allocator, "{s}/org/indexed-model", .{path_buf[0..root_len]});
+    defer allocator.free(abs);
+    const probe = try probeModelDir(io, allocator, abs);
+    defer allocator.free(probe.model_type);
+    try testing.expectEqual(@as(?u64, 10), probe.bytes_on_disk);
+}
+
+test "checkpoint byte accounting falls back when an index cannot be trusted" {
+    const io = std.testing.io;
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, "fallback");
+    try tmp.dir.writeFile(io, .{ .sub_path = "fallback/a.safetensors", .data = "1234" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "fallback/b.safetensors", .data = "12345" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "outside.safetensors", .data = "do-not-follow" });
+    var dir = try tmp.dir.openDir(io, "fallback", .{ .iterate = true });
+    defer dir.close(io);
+
+    // No index retains the legacy all-root-files behavior.
+    try testing.expectEqual(@as(?u64, 9), checkpointWeightBytes(io, allocator, dir));
+
+    // Malformed, empty, wrong-type, missing-file, and path-traversal manifests
+    // are all untrusted. None may produce a partial or out-of-directory sum.
+    const invalid_indexes = [_][]const u8{
+        "{",
+        "{\"weight_map\":{}}",
+        "{\"weight_map\":[]}",
+        "{\"weight_map\":{\"a\":\"missing.safetensors\"}}",
+        "{\"weight_map\":{\"a\":\"../outside.safetensors\"}}",
+    };
+    for (invalid_indexes) |index_json| {
+        try dir.writeFile(io, .{ .sub_path = "model.safetensors.index.json", .data = index_json });
+        try testing.expectEqual(@as(?u64, 9), checkpointWeightBytes(io, allocator, dir));
+    }
 }
 
 test "discoverModels finds GGUF dirs without config.json (issue #59)" {

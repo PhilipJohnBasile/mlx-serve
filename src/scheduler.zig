@@ -2692,23 +2692,12 @@ fn doLoadGenOnInferenceThread(sch: *Scheduler, params: anytype, modality: gen_mo
     sch.hot_prefix_cache = null;
 }
 
-/// Sum of `*.safetensors` bytes in `model_dir` — the MLX weight footprint used
-/// by the load pre-flight. Returns 0 if the dir can't be read (treated as
-/// "unknown" by the caller, which then skips the check). Symlinked weights
-/// count (statFile follows links) — an HF hub-cache snapshot is ALL symlinks.
-fn modelDiskBytes(io: std.Io, model_dir: []const u8) u64 {
+/// Weight bytes for the active checkpoint in `model_dir`, shared with model
+/// discovery so the load preflight and residency gate cannot disagree.
+fn modelDiskBytes(io: std.Io, allocator: std.mem.Allocator, model_dir: []const u8) u64 {
     var dir = std.Io.Dir.openDirAbsolute(io, model_dir, .{ .iterate = true }) catch return 0;
     defer dir.close(io);
-    var it = dir.iterate();
-    var total: u64 = 0;
-    while (it.next(io) catch null) |entry| {
-        if (entry.kind != .file and entry.kind != .sym_link) continue;
-        if (!std.mem.endsWith(u8, entry.name, ".safetensors")) continue;
-        const st = dir.statFile(io, entry.name, .{}) catch continue;
-        if (st.kind != .file) continue;
-        total += @intCast(st.size);
-    }
-    return total;
+    return model_discovery.checkpointWeightBytes(io, allocator, dir) orelse 0;
 }
 
 test "modelDiskBytes follows HF-cache symlinks (a snapshot dir measured ZERO)" {
@@ -2724,6 +2713,14 @@ test "modelDiskBytes follows HF-cache symlinks (a snapshot dir measured ZERO)" {
     try tmp.dir.writeFile(io, .{ .sub_path = "blobs/abc123", .data = "0123456789abcdef" });
     try tmp.dir.createDirPath(io, "snapshots/rev");
     try tmp.dir.symLink(io, "../../blobs/abc123", "snapshots/rev/model.safetensors", .{});
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "snapshots/rev/model.safetensors.index.json",
+        .data =
+        \\{"weight_map":{"a":"model.safetensors","b":"model.safetensors"}}
+        ,
+    });
+    // An unreferenced alternate file must not inflate the preflight estimate.
+    try tmp.dir.writeFile(io, .{ .sub_path = "snapshots/rev/unused.safetensors", .data = "unused" });
     // A dangling link (blob pruned) is skipped, never an error…
     try tmp.dir.symLink(io, "../../blobs/gone", "snapshots/rev/model-00002.safetensors", .{});
     // …and a symlink to a DIRECTORY must not be summed (statFile follows it).
@@ -2735,7 +2732,7 @@ test "modelDiskBytes follows HF-cache symlinks (a snapshot dir measured ZERO)" {
     const snap = try std.fmt.allocPrint(std.testing.allocator, "{s}/.zig-cache/tmp/{s}/snapshots/rev", .{ cwd, tmp.sub_path });
     defer std.testing.allocator.free(snap);
 
-    try std.testing.expectEqual(@as(u64, 16), modelDiskBytes(io, snap));
+    try std.testing.expectEqual(@as(u64, 16), modelDiskBytes(io, std.testing.allocator, snap));
 }
 
 /// Pure: would loading `weights_bytes` of model with `avail_bytes` free RAM risk
@@ -3098,7 +3095,7 @@ fn doLoadOnInferenceThread(sch: *Scheduler, params: anytype) !void {
     // headroom — catches the common "restarted before the prior server released
     // its memory" case. Bypass with --skip-mem-preflight.
     if (!skip_mem_preflight) {
-        const weights_bytes = modelDiskBytes(sch.io, params.model_dir);
+        const weights_bytes = modelDiskBytes(sch.io, sch.allocator, params.model_dir);
         const avail_bytes = effectiveAvailableBytes(status.getAvailableMemBytes(), status.getProcAvailableMemBytes());
         log.info("[preflight] weights ~{d:.2} GB, available {d:.2} GB\n", .{
             @as(f64, @floatFromInt(weights_bytes)) / (1024.0 * 1024.0 * 1024.0),

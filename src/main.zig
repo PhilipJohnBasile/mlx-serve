@@ -1235,8 +1235,17 @@ pub fn main(init: std.process.Init) !void {
             // Discovered under an org/name id whose basename differs from
             // model_id — reuse it, never register the same path twice.
             e
-        else
-            try registry.registerStub(model_id, model_dir, null);
+        else blk: {
+            // An explicit MLX path outside every discovery root still needs
+            // the same manifest-derived bill for eviction and committed
+            // residency. Preflight alone is too late to seed the registry.
+            var bytes_on_disk: ?u64 = null;
+            if (model_discovery.probeModelDir(io, allocator, model_dir)) |probe| {
+                bytes_on_disk = probe.bytes_on_disk;
+                allocator.free(probe.model_type);
+            } else |_| {}
+            break :blk try registry.registerStub(model_id, model_dir, bytes_on_disk);
+        };
         try registry.setDefault(entry.id);
 
         // Ownership-transfer defer: registry takes ownership of
