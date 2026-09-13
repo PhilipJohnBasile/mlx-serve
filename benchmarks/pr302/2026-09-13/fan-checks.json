@@ -1,0 +1,53 @@
+[
+  {
+    "observed_at": "2026-09-13T04:58:32.698645+00:00",
+    "stage": "01-A measured benchmark",
+    "preset": "Full blast",
+    "left_rpm": 5361,
+    "right_rpm": 5779,
+    "cpu_core_average_c": 78,
+    "source": "Macs Fan Control UI via cua screenshot"
+  },
+  {
+    "observed_at": "2026-09-13T05:14:37.234499+00:00",
+    "stage": "03-B measured benchmark",
+    "preset": "Full blast",
+    "left_rpm": 5340,
+    "right_rpm": 5786,
+    "cpu_core_average_c": 74,
+    "source": "Macs Fan Control UI via cua screenshot"
+  },
+  {
+    "observed_at": "2026-09-13T05:28:24.817040+00:00",
+    "stage": "05-A measured benchmark",
+    "preset": "Full blast",
+    "left_rpm": 5352,
+    "right_rpm": 5781,
+    "cpu_core_average_c": 76,
+    "source": "Macs Fan Control UI via cua screenshot"
+  },
+  {
+    "observed_at": "2026-09-13T05:42:28.775545+00:00",
+    "stage": "07-B benchmark",
+    "preset": "Full blast",
+    "left_rpm": 5350,
+    "right_rpm": 5781,
+    "cpu_core_average_c": 74,
+    "source": "Macs Fan Control UI via cua screenshot"
+  },
+  {
+    "observed_at": "2026-09-13T05:52:56.947295+00:00",
+    "stage": "08-A final 32K measurement",
+    "preset": "Full blast",
+    "left_rpm": 5356,
+    "right_rpm": 5791,
+    "cpu_core_average_c": 74,
+    "source": "Macs Fan Control UI via cua screenshot"
+  },
+  {
+    "observed_at": "2026-09-13T05:56:30.574083+00:00",
+    "stage": "after completed eight-run session",
+    "preset": "Automatic",
+    "source": "Macs Fan Control UI; original preset restored after benchmark completion"
+  }
+]

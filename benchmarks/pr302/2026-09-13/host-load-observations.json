@@ -1,0 +1,12 @@
+[
+  {
+    "observed_at": "2026-09-13T05:12:37.757308+00:00",
+    "stage": "after 02-B, before 03-B measured report",
+    "process_cpu_percent": {
+      "flutter_tester": 98.5,
+      "dasd": 97.2,
+      "WindowServer": 71.9
+    },
+    "notes": "An unrelated Flutter test process was active. A frontend build at 00:59 EDT and a native build at 01:03 EDT overlapped the first two runs. This session did not have exclusive use of the host."
+  }
+]

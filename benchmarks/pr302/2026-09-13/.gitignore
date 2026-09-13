@@ -1,0 +1,4 @@
+# Full raw logs and discarded warmup responses are preserved in evidence.zip.
+session-01/*.log
+session-01/*.warmup-*.json
+build/*.log

@@ -1,0 +1,13 @@
+{
+  "optimize": "ReleaseFast",
+  "zig": "0.17.0-dev.1818+7051f8e73",
+  "control_source": "6787142",
+  "candidate_source": "1032fba",
+  "control_build_exit": 0,
+  "candidate_build_exit": 0,
+  "focused_test_command": "zig build test -Doptimize=ReleaseFast -Dtest-filter=splitCausalSdpa",
+  "focused_test_exit": 0,
+  "harness_test_command": "python3 -m unittest discover -s tests -p test_bench_pr302_abba.py -v",
+  "harness_tests_passed": 5,
+  "prior_incomplete_reports_rejected": 6
+}

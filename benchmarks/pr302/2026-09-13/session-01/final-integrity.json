@@ -1,0 +1,9 @@
+{
+  "model_files_unchanged": 22,
+  "binaries_unchanged": 2,
+  "mlx_libraries_unchanged": true,
+  "potential_credential_pattern_matches": 0,
+  "llmprobe_reports": 8,
+  "all_rungs_successful": 32,
+  "prefix_cache_reported_cached_tokens": 0
+}

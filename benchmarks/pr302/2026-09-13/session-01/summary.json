@@ -1,0 +1,1636 @@
+{
+  "short_prompt": {
+    "decode": {
+      "A": {
+        "median": 42.3,
+        "min": 39.4,
+        "max": 42.7,
+        "samples": [
+          39.4,
+          42.5,
+          42.1,
+          42.7
+        ]
+      },
+      "B": {
+        "median": 38.099999999999994,
+        "min": 36.8,
+        "max": 39.6,
+        "samples": [
+          39.6,
+          37.4,
+          38.8,
+          36.8
+        ]
+      }
+    },
+    "novel_spec": {
+      "A": {
+        "median": 20.0,
+        "min": 19.6,
+        "max": 21.3,
+        "samples": [
+          19.9,
+          19.6,
+          20.1,
+          21.3
+        ]
+      },
+      "B": {
+        "median": 19.6,
+        "min": 19.1,
+        "max": 20,
+        "samples": [
+          20,
+          19.1,
+          19.9,
+          19.3
+        ]
+      }
+    },
+    "predictable_spec": {
+      "A": {
+        "median": 84.44999999999999,
+        "min": 82.2,
+        "max": 88,
+        "samples": [
+          82.2,
+          83.1,
+          88,
+          85.8
+        ]
+      },
+      "B": {
+        "median": 80.9,
+        "min": 77,
+        "max": 83.3,
+        "samples": [
+          80.4,
+          77,
+          81.4,
+          83.3
+        ]
+      }
+    },
+    "prefill": {
+      "A": {
+        "median": 735.9,
+        "min": 707.3,
+        "max": 750.8,
+        "samples": [
+          707.3,
+          738.8,
+          733,
+          750.8
+        ]
+      },
+      "B": {
+        "median": 631.75,
+        "min": 596.6,
+        "max": 677.1,
+        "samples": [
+          627,
+          596.6,
+          636.5,
+          677.1
+        ]
+      }
+    },
+    "ttft_ms": {
+      "A": {
+        "median": 371.5,
+        "min": 364,
+        "max": 380,
+        "samples": [
+          380,
+          374,
+          369,
+          364
+        ]
+      },
+      "B": {
+        "median": 407.5,
+        "min": 394,
+        "max": 415,
+        "samples": [
+          409,
+          415,
+          394,
+          406
+        ]
+      }
+    }
+  },
+  "context": {
+    "2048": {
+      "decodeTokPerSec": {
+        "A": {
+          "median": 49.7,
+          "min": 48.3,
+          "max": 51,
+          "samples": [
+            48.3,
+            51,
+            50.2,
+            49.2
+          ]
+        },
+        "B": {
+          "median": 47.2,
+          "min": 42.7,
+          "max": 54,
+          "samples": [
+            46,
+            48.4,
+            54,
+            42.7
+          ]
+        },
+        "median_change_pct": -5.030181086519114
+      },
+      "prefillTokPerSec": {
+        "A": {
+          "median": 669.0,
+          "min": 647,
+          "max": 737,
+          "samples": [
+            647,
+            662,
+            676,
+            737
+          ]
+        },
+        "B": {
+          "median": 666.5,
+          "min": 628,
+          "max": 710,
+          "samples": [
+            653,
+            628,
+            710,
+            680
+          ]
+        },
+        "median_change_pct": -0.37369207772794955
+      },
+      "ttftMs": {
+        "A": {
+          "median": 3146.0,
+          "min": 2849,
+          "max": 3257,
+          "samples": [
+            3257,
+            3182,
+            3110,
+            2849
+          ]
+        },
+        "B": {
+          "median": 3162.5,
+          "min": 2969,
+          "max": 3357,
+          "samples": [
+            3228,
+            3357,
+            2969,
+            3097
+          ]
+        },
+        "median_change_pct": 0.5244755244755206
+      }
+    },
+    "8192": {
+      "decodeTokPerSec": {
+        "A": {
+          "median": 43.75,
+          "min": 40.3,
+          "max": 46.5,
+          "samples": [
+            42.5,
+            46.5,
+            45,
+            40.3
+          ]
+        },
+        "B": {
+          "median": 40.7,
+          "min": 39.4,
+          "max": 45.2,
+          "samples": [
+            41.8,
+            39.6,
+            39.4,
+            45.2
+          ]
+        },
+        "median_change_pct": -6.971428571428562
+      },
+      "prefillTokPerSec": {
+        "A": {
+          "median": 718.5,
+          "min": 653,
+          "max": 730,
+          "samples": [
+            653,
+            725,
+            730,
+            712
+          ]
+        },
+        "B": {
+          "median": 699.0,
+          "min": 617,
+          "max": 746,
+          "samples": [
+            666,
+            617,
+            746,
+            732
+          ]
+        },
+        "median_change_pct": -2.713987473903967
+      },
+      "ttftMs": {
+        "A": {
+          "median": 11456.5,
+          "min": 11294,
+          "max": 12599,
+          "samples": [
+            12599,
+            11335,
+            11294,
+            11578
+          ]
+        },
+        "B": {
+          "median": 11794.5,
+          "min": 11021,
+          "max": 13322,
+          "samples": [
+            12351,
+            13322,
+            11021,
+            11238
+          ]
+        },
+        "median_change_pct": 2.950290228254704
+      }
+    },
+    "16384": {
+      "decodeTokPerSec": {
+        "A": {
+          "median": 43.45,
+          "min": 40.9,
+          "max": 44.3,
+          "samples": [
+            43.4,
+            44.3,
+            40.9,
+            43.5
+          ]
+        },
+        "B": {
+          "median": 41.3,
+          "min": 38.8,
+          "max": 42.9,
+          "samples": [
+            42.9,
+            38.8,
+            42.8,
+            39.8
+          ]
+        },
+        "median_change_pct": -4.948216340621414
+      },
+      "prefillTokPerSec": {
+        "A": {
+          "median": 696.0,
+          "min": 666,
+          "max": 740,
+          "samples": [
+            666,
+            740,
+            671,
+            721
+          ]
+        },
+        "B": {
+          "median": 644.5,
+          "min": 635,
+          "max": 668,
+          "samples": [
+            635,
+            636,
+            653,
+            668
+          ]
+        },
+        "median_change_pct": -7.399425287356321
+      },
+      "ttftMs": {
+        "A": {
+          "median": 23496.5,
+          "min": 22073,
+          "max": 24532,
+          "samples": [
+            24532,
+            22073,
+            24347,
+            22646
+          ]
+        },
+        "B": {
+          "median": 25347.0,
+          "min": 24461,
+          "max": 25717,
+          "samples": [
+            25717,
+            25673,
+            25021,
+            24461
+          ]
+        },
+        "median_change_pct": 7.875641052922777
+      }
+    },
+    "32768": {
+      "decodeTokPerSec": {
+        "A": {
+          "median": 36.5,
+          "min": 34.3,
+          "max": 37.8,
+          "samples": [
+            37.8,
+            35.7,
+            34.3,
+            37.3
+          ]
+        },
+        "B": {
+          "median": 31.150000000000002,
+          "min": 29.7,
+          "max": 40.2,
+          "samples": [
+            30.1,
+            32.2,
+            29.7,
+            40.2
+          ]
+        },
+        "median_change_pct": -14.657534246575333
+      },
+      "prefillTokPerSec": {
+        "A": {
+          "median": 631.5,
+          "min": 613,
+          "max": 707,
+          "samples": [
+            641,
+            622,
+            613,
+            707
+          ]
+        },
+        "B": {
+          "median": 634.0,
+          "min": 629,
+          "max": 646,
+          "samples": [
+            629,
+            646,
+            630,
+            638
+          ]
+        },
+        "median_change_pct": 0.39588281868567776
+      },
+      "ttftMs": {
+        "A": {
+          "median": 52088.0,
+          "min": 46491,
+          "max": 53609,
+          "samples": [
+            51302,
+            52874,
+            53609,
+            46491
+          ]
+        },
+        "B": {
+          "median": 51871.0,
+          "min": 50912,
+          "max": 52262,
+          "samples": [
+            52262,
+            50912,
+            52230,
+            51512
+          ]
+        },
+        "median_change_pct": -0.4166026724005567
+      }
+    }
+  },
+  "runs": [
+    {
+      "run": "01-A",
+      "arm": "A",
+      "bench": {
+        "decodeTokPerSec": {
+          "median": 39.4,
+          "min": 39.2,
+          "max": 39.8,
+          "samples": [
+            39.2,
+            39.8,
+            39.4
+          ]
+        },
+        "streamCaveat": null,
+        "decodeLengthNote": "decode length forced to 192 tokens (ignore_eos + min_tokens) \u2014 decode and drift figures compare equal work",
+        "samplingNote": null,
+        "runsNote": "custom setup: rungs 2k, 8k, 16k, 32k \u2014 not comparable to default runs",
+        "ttftMs": {
+          "median": 380,
+          "min": 378,
+          "max": 384,
+          "samples": [
+            378,
+            384,
+            380
+          ]
+        },
+        "prefillTokPerSec": {
+          "median": 707.3,
+          "min": 704.9,
+          "max": 710.5,
+          "samples": [
+            707.3,
+            704.9,
+            710.5
+          ]
+        },
+        "prefillPromptTokens": 2042,
+        "speculative": {
+          "predictableTokPerSec": 82.2,
+          "novelTokPerSec": 19.9,
+          "ratio": 4.13,
+          "verdict": "effective",
+          "tokensPerStep": null,
+          "tokensPerStepNote": "22 write(s) for 192 tokens \u2014 stream looks buffered",
+          "reasoningCaveat": true,
+          "offScript": 0
+        },
+        "prefixCache": {
+          "coldTtftMs": 2296,
+          "warmTtftMs": 2328,
+          "speedup": 1,
+          "cachedTokens": 0,
+          "promptTokens": 1541,
+          "verdict": "none"
+        },
+        "batching": {
+          "streams": 4,
+          "singleTokPerSec": 18,
+          "aggregateTokPerSec": 18.4,
+          "efficiency": 0.26,
+          "worstTtftMs": 1982,
+          "verdict": "serialized"
+        },
+        "loadDrift": {
+          "firstTokPerSec": 39.4,
+          "lastTokPerSec": 37.2,
+          "driftPct": -5.6,
+          "elapsedMs": 328542,
+          "verdict": "steady"
+        },
+        "machine": {
+          "platform": "darwin",
+          "arch": "arm64",
+          "cpu": "Apple M5 Max",
+          "memGB": 128
+        },
+        "contextScaling": [
+          {
+            "targetTokens": 2048,
+            "inputTokens": 2107,
+            "decodeTokPerSec": 48.3,
+            "ttftMs": 3257,
+            "prefillTokPerSec": 647,
+            "speculative": {
+              "predictableTokPerSec": 71.4,
+              "predictableTokensPerStep": 8,
+              "ratio": 1.48,
+              "verdict": "effective",
+              "tokensPerStep": 5.49,
+              "note": null
+            },
+            "runs": 1,
+            "note": null
+          },
+          {
+            "targetTokens": 8192,
+            "inputTokens": 8222,
+            "decodeTokPerSec": 42.5,
+            "ttftMs": 12599,
+            "prefillTokPerSec": 653,
+            "speculative": {
+              "predictableTokPerSec": 66.3,
+              "predictableTokensPerStep": 7.68,
+              "ratio": 1.56,
+              "verdict": "effective",
+              "tokensPerStep": 5.19,
+              "note": null
+            },
+            "runs": 1,
+            "note": null
+          },
+          {
+            "targetTokens": 16384,
+            "inputTokens": 16339,
+            "decodeTokPerSec": 43.4,
+            "ttftMs": 24532,
+            "prefillTokPerSec": 666,
+            "speculative": {
+              "predictableTokPerSec": 64.1,
+              "predictableTokensPerStep": 8,
+              "ratio": 1.48,
+              "verdict": "effective",
+              "tokensPerStep": 5.49,
+              "note": null
+            },
+            "runs": 1,
+            "note": null
+          },
+          {
+            "targetTokens": 32768,
+            "inputTokens": 32882,
+            "decodeTokPerSec": 37.8,
+            "ttftMs": 51302,
+            "prefillTokPerSec": 641,
+            "speculative": {
+              "predictableTokPerSec": 51.2,
+              "predictableTokensPerStep": 8,
+              "ratio": 1.35,
+              "verdict": "effective",
+              "tokensPerStep": 5.65,
+              "note": null
+            },
+            "runs": 1,
+            "note": null
+          }
+        ]
+      }
+    },
+    {
+      "run": "02-B",
+      "arm": "B",
+      "bench": {
+        "decodeTokPerSec": {
+          "median": 39.6,
+          "min": 39.1,
+          "max": 39.8,
+          "samples": [
+            39.8,
+            39.6,
+            39.1
+          ]
+        },
+        "streamCaveat": null,
+        "decodeLengthNote": "decode length forced to 192 tokens (ignore_eos + min_tokens) \u2014 decode and drift figures compare equal work",
+        "samplingNote": null,
+        "runsNote": "custom setup: rungs 2k, 8k, 16k, 32k \u2014 not comparable to default runs",
+        "ttftMs": {
+          "median": 409,
+          "min": 365,
+          "max": 412,
+          "samples": [
+            412,
+            365,
+            409
+          ]
+        },
+        "prefillTokPerSec": {
+          "median": 627,
+          "min": 622.8,
+          "max": 638.5,
+          "samples": [
+            638.5,
+            627,
+            622.8
+          ]
+        },
+        "prefillPromptTokens": 2042,
+        "speculative": {
+          "predictableTokPerSec": 80.4,
+          "novelTokPerSec": 20,
+          "ratio": 4.02,
+          "verdict": "effective",
+          "tokensPerStep": null,
+          "tokensPerStepNote": "22 write(s) for 192 tokens \u2014 stream looks buffered",
+          "reasoningCaveat": true,
+          "offScript": 0
+        },
+        "prefixCache": {
+          "coldTtftMs": 2637,
+          "warmTtftMs": 2596,
+          "speedup": 1,
+          "cachedTokens": 0,
+          "promptTokens": 1541,
+          "verdict": "none"
+        },
+        "batching": {
+          "streams": 4,
+          "singleTokPerSec": 17,
+          "aggregateTokPerSec": 18.6,
+          "efficiency": 0.27,
+          "worstTtftMs": 2089,
+          "verdict": "serialized"
+        },
+        "loadDrift": {
+          "firstTokPerSec": 39.6,
+          "lastTokPerSec": 38.5,
+          "driftPct": -2.8,
+          "elapsedMs": 339391,
+          "verdict": "steady"
+        },
+        "machine": {
+          "platform": "darwin",
+          "arch": "arm64",
+          "cpu": "Apple M5 Max",
+          "memGB": 128
+        },
+        "contextScaling": [
+          {
+            "targetTokens": 2048,
+            "inputTokens": 2107,
+            "decodeTokPerSec": 46,
+            "ttftMs": 3228,
+            "prefillTokPerSec": 653,
+            "speculative": {
+              "predictableTokPerSec": 67.9,
+              "predictableTokensPerStep": 8,
+              "ratio": 1.48,
+              "verdict": "effective",
+              "tokensPerStep": 5.49,
+              "note": null
+            },
+            "runs": 1,
+            "note": null
+          },
+          {
+            "targetTokens": 8192,
+            "inputTokens": 8222,
+            "decodeTokPerSec": 41.8,
+            "ttftMs": 12351,
+            "prefillTokPerSec": 666,
+            "speculative": {
+              "predictableTokPerSec": 64.4,
+              "predictableTokensPerStep": 8,
+              "ratio": 1.54,
+              "verdict": "effective",
+              "tokensPerStep": 5.49,
+              "note": null
+            },
+            "runs": 1,
+            "note": null
+          },
+          {
+            "targetTokens": 16384,
+            "inputTokens": 16339,
+            "decodeTokPerSec": 42.9,
+            "ttftMs": 25717,
+            "prefillTokPerSec": 635,
+            "speculative": {
+              "predictableTokPerSec": 58.5,
+              "predictableTokensPerStep": 8,
+              "ratio": 1.36,
+              "verdict": "effective",
+              "tokensPerStep": 6,
+              "note": null
+            },
+            "runs": 1,
+            "note": null
+          },
+          {
+            "targetTokens": 32768,
+            "inputTokens": 32882,
+            "decodeTokPerSec": 30.1,
+            "ttftMs": 52262,
+            "prefillTokPerSec": 629,
+            "speculative": {
+              "predictableTokPerSec": 45.8,
+              "predictableTokensPerStep": 8,
+              "ratio": 1.52,
+              "verdict": "effective",
+              "tokensPerStep": 5.33,
+              "note": null
+            },
+            "runs": 1,
+            "note": null
+          }
+        ]
+      }
+    },
+    {
+      "run": "03-B",
+      "arm": "B",
+      "bench": {
+        "decodeTokPerSec": {
+          "median": 37.4,
+          "min": 37.1,
+          "max": 39.1,
+          "samples": [
+            39.1,
+            37.4,
+            37.1
+          ]
+        },
+        "streamCaveat": null,
+        "decodeLengthNote": "decode length forced to 192 tokens (ignore_eos + min_tokens) \u2014 decode and drift figures compare equal work",
+        "samplingNote": null,
+        "runsNote": "custom setup: rungs 2k, 8k, 16k, 32k \u2014 not comparable to default runs",
+        "ttftMs": {
+          "median": 415,
+          "min": 413,
+          "max": 416,
+          "samples": [
+            416,
+            415,
+            413
+          ]
+        },
+        "prefillTokPerSec": {
+          "median": 596.6,
+          "min": 591.5,
+          "max": 599.2,
+          "samples": [
+            591.5,
+            596.6,
+            599.2
+          ]
+        },
+        "prefillPromptTokens": 2042,
+        "speculative": {
+          "predictableTokPerSec": 77,
+          "novelTokPerSec": 19.1,
+          "ratio": 4.03,
+          "verdict": "effective",
+          "tokensPerStep": null,
+          "tokensPerStepNote": "22 write(s) for 192 tokens \u2014 stream looks buffered",
+          "reasoningCaveat": true,
+          "offScript": 0
+        },
+        "prefixCache": {
+          "coldTtftMs": 2869,
+          "warmTtftMs": 2538,
+          "speedup": 1.1,
+          "cachedTokens": 0,
+          "promptTokens": 1541,
+          "verdict": "none"
+        },
+        "batching": {
+          "streams": 4,
+          "singleTokPerSec": 17.3,
+          "aggregateTokPerSec": 17.9,
+          "efficiency": 0.26,
+          "worstTtftMs": 2169,
+          "verdict": "serialized"
+        },
+        "loadDrift": {
+          "firstTokPerSec": 37.4,
+          "lastTokPerSec": 39.1,
+          "driftPct": 4.5,
+          "elapsedMs": 337202,
+          "verdict": "steady"
+        },
+        "machine": {
+          "platform": "darwin",
+          "arch": "arm64",
+          "cpu": "Apple M5 Max",
+          "memGB": 128
+        },
+        "contextScaling": [
+          {
+            "targetTokens": 2048,
+            "inputTokens": 2107,
+            "decodeTokPerSec": 48.4,
+            "ttftMs": 3357,
+            "prefillTokPerSec": 628,
+            "speculative": {
+              "predictableTokPerSec": 66.8,
+              "predictableTokensPerStep": 7.68,
+              "ratio": 1.38,
+              "verdict": "effective",
+              "tokensPerStep": 5.65,
+              "note": null
+            },
+            "runs": 1,
+            "note": null
+          },
+          {
+            "targetTokens": 8192,
+            "inputTokens": 8222,
+            "decodeTokPerSec": 39.6,
+            "ttftMs": 13322,
+            "prefillTokPerSec": 617,
+            "speculative": {
+              "predictableTokPerSec": 65.3,
+              "predictableTokensPerStep": null,
+              "ratio": 1.65,
+              "verdict": "effective",
+              "tokensPerStep": 5.33,
+              "note": null
+            },
+            "runs": 1,
+            "note": null
+          },
+          {
+            "targetTokens": 16384,
+            "inputTokens": 16339,
+            "decodeTokPerSec": 38.8,
+            "ttftMs": 25673,
+            "prefillTokPerSec": 636,
+            "speculative": {
+              "predictableTokPerSec": 57.1,
+              "predictableTokensPerStep": 8,
+              "ratio": 1.47,
+              "verdict": "effective",
+              "tokensPerStep": 5.49,
+              "note": null
+            },
+            "runs": 1,
+            "note": null
+          },
+          {
+            "targetTokens": 32768,
+            "inputTokens": 32882,
+            "decodeTokPerSec": 32.2,
+            "ttftMs": 50912,
+            "prefillTokPerSec": 646,
+            "speculative": {
+              "predictableTokPerSec": 46.7,
+              "predictableTokensPerStep": 8,
+              "ratio": 1.45,
+              "verdict": "effective",
+              "tokensPerStep": 5.49,
+              "note": null
+            },
+            "runs": 1,
+            "note": null
+          }
+        ]
+      }
+    },
+    {
+      "run": "04-A",
+      "arm": "A",
+      "bench": {
+        "decodeTokPerSec": {
+          "median": 42.5,
+          "min": 40.8,
+          "max": 42.6,
+          "samples": [
+            42.5,
+            42.6,
+            40.8
+          ]
+        },
+        "streamCaveat": null,
+        "decodeLengthNote": "decode length forced to 192 tokens (ignore_eos + min_tokens) \u2014 decode and drift figures compare equal work",
+        "samplingNote": null,
+        "runsNote": "custom setup: rungs 2k, 8k, 16k, 32k \u2014 not comparable to default runs",
+        "ttftMs": {
+          "median": 374,
+          "min": 367,
+          "max": 387,
+          "samples": [
+            387,
+            367,
+            374
+          ]
+        },
+        "prefillTokPerSec": {
+          "median": 738.8,
+          "min": 723.9,
+          "max": 739.9,
+          "samples": [
+            739.9,
+            738.8,
+            723.9
+          ]
+        },
+        "prefillPromptTokens": 2042,
+        "speculative": {
+          "predictableTokPerSec": 83.1,
+          "novelTokPerSec": 19.6,
+          "ratio": 4.25,
+          "verdict": "effective",
+          "tokensPerStep": null,
+          "tokensPerStepNote": "22 write(s) for 192 tokens \u2014 stream looks buffered",
+          "reasoningCaveat": true,
+          "offScript": 0
+        },
+        "prefixCache": {
+          "coldTtftMs": 2867,
+          "warmTtftMs": 2575,
+          "speedup": 1.1,
+          "cachedTokens": 0,
+          "promptTokens": 1541,
+          "verdict": "none"
+        },
+        "batching": {
+          "streams": 4,
+          "singleTokPerSec": 19.7,
+          "aggregateTokPerSec": 19.3,
+          "efficiency": 0.25,
+          "worstTtftMs": 2051,
+          "verdict": "serialized"
+        },
+        "loadDrift": {
+          "firstTokPerSec": 42.5,
+          "lastTokPerSec": 40.2,
+          "driftPct": -5.4,
+          "elapsedMs": 320970,
+          "verdict": "steady"
+        },
+        "machine": {
+          "platform": "darwin",
+          "arch": "arm64",
+          "cpu": "Apple M5 Max",
+          "memGB": 128
+        },
+        "contextScaling": [
+          {
+            "targetTokens": 2048,
+            "inputTokens": 2107,
+            "decodeTokPerSec": 51,
+            "ttftMs": 3182,
+            "prefillTokPerSec": 662,
+            "speculative": {
+              "predictableTokPerSec": 74.8,
+              "predictableTokensPerStep": 8,
+              "ratio": 1.47,
+              "verdict": "effective",
+              "tokensPerStep": 5.65,
+              "note": null
+            },
+            "runs": 1,
+            "note": null
+          },
+          {
+            "targetTokens": 8192,
+            "inputTokens": 8222,
+            "decodeTokPerSec": 46.5,
+            "ttftMs": 11335,
+            "prefillTokPerSec": 725,
+            "speculative": {
+              "predictableTokPerSec": 71.1,
+              "predictableTokensPerStep": 8,
+              "ratio": 1.53,
+              "verdict": "effective",
+              "tokensPerStep": 5.33,
+              "note": null
+            },
+            "runs": 1,
+            "note": null
+          },
+          {
+            "targetTokens": 16384,
+            "inputTokens": 16339,
+            "decodeTokPerSec": 44.3,
+            "ttftMs": 22073,
+            "prefillTokPerSec": 740,
+            "speculative": {
+              "predictableTokPerSec": 70.1,
+              "predictableTokensPerStep": null,
+              "ratio": 1.58,
+              "verdict": "effective",
+              "tokensPerStep": 5.49,
+              "note": null
+            },
+            "runs": 1,
+            "note": null
+          },
+          {
+            "targetTokens": 32768,
+            "inputTokens": 32882,
+            "decodeTokPerSec": 35.7,
+            "ttftMs": 52874,
+            "prefillTokPerSec": 622,
+            "speculative": {
+              "predictableTokPerSec": 53.4,
+              "predictableTokensPerStep": 8,
+              "ratio": 1.49,
+              "verdict": "effective",
+              "tokensPerStep": 5.65,
+              "note": null
+            },
+            "runs": 1,
+            "note": null
+          }
+        ]
+      }
+    },
+    {
+      "run": "05-A",
+      "arm": "A",
+      "bench": {
+        "decodeTokPerSec": {
+          "median": 42.1,
+          "min": 42,
+          "max": 44.3,
+          "samples": [
+            44.3,
+            42,
+            42.1
+          ]
+        },
+        "streamCaveat": null,
+        "decodeLengthNote": "decode length forced to 192 tokens (ignore_eos + min_tokens) \u2014 decode and drift figures compare equal work",
+        "samplingNote": null,
+        "runsNote": "custom setup: rungs 2k, 8k, 16k, 32k \u2014 not comparable to default runs",
+        "ttftMs": {
+          "median": 369,
+          "min": 367,
+          "max": 373,
+          "samples": [
+            369,
+            367,
+            373
+          ]
+        },
+        "prefillTokPerSec": {
+          "median": 733,
+          "min": 708.6,
+          "max": 748.4,
+          "samples": [
+            733,
+            708.6,
+            748.4
+          ]
+        },
+        "prefillPromptTokens": 2043,
+        "speculative": {
+          "predictableTokPerSec": 88,
+          "novelTokPerSec": 20.1,
+          "ratio": 4.37,
+          "verdict": "effective",
+          "tokensPerStep": null,
+          "tokensPerStepNote": "22 write(s) for 192 tokens \u2014 stream looks buffered",
+          "reasoningCaveat": true,
+          "offScript": 0
+        },
+        "prefixCache": {
+          "coldTtftMs": 2590,
+          "warmTtftMs": 2400,
+          "speedup": 1.1,
+          "cachedTokens": 0,
+          "promptTokens": 1542,
+          "verdict": "none"
+        },
+        "batching": {
+          "streams": 4,
+          "singleTokPerSec": 23.1,
+          "aggregateTokPerSec": 19.7,
+          "efficiency": 0.21,
+          "worstTtftMs": 2014,
+          "verdict": "serialized"
+        },
+        "loadDrift": {
+          "firstTokPerSec": 42.1,
+          "lastTokPerSec": 36.9,
+          "driftPct": -12.4,
+          "elapsedMs": 328101,
+          "verdict": "degraded"
+        },
+        "machine": {
+          "platform": "darwin",
+          "arch": "arm64",
+          "cpu": "Apple M5 Max",
+          "memGB": 128
+        },
+        "contextScaling": [
+          {
+            "targetTokens": 2048,
+            "inputTokens": 2101,
+            "decodeTokPerSec": 50.2,
+            "ttftMs": 3110,
+            "prefillTokPerSec": 676,
+            "speculative": {
+              "predictableTokPerSec": 79.3,
+              "predictableTokensPerStep": null,
+              "ratio": 1.58,
+              "verdict": "effective",
+              "tokensPerStep": 5.49,
+              "note": null
+            },
+            "runs": 1,
+            "note": null
+          },
+          {
+            "targetTokens": 8192,
+            "inputTokens": 8243,
+            "decodeTokPerSec": 45,
+            "ttftMs": 11294,
+            "prefillTokPerSec": 730,
+            "speculative": {
+              "predictableTokPerSec": 69.2,
+              "predictableTokensPerStep": 7.68,
+              "ratio": 1.54,
+              "verdict": "effective",
+              "tokensPerStep": 5.05,
+              "note": null
+            },
+            "runs": 1,
+            "note": null
+          },
+          {
+            "targetTokens": 16384,
+            "inputTokens": 16333,
+            "decodeTokPerSec": 40.9,
+            "ttftMs": 24347,
+            "prefillTokPerSec": 671,
+            "speculative": {
+              "predictableTokPerSec": 61.1,
+              "predictableTokensPerStep": 8,
+              "ratio": 1.5,
+              "verdict": "effective",
+              "tokensPerStep": 5.49,
+              "note": null
+            },
+            "runs": 1,
+            "note": null
+          },
+          {
+            "targetTokens": 32768,
+            "inputTokens": 32883,
+            "decodeTokPerSec": 34.3,
+            "ttftMs": 53609,
+            "prefillTokPerSec": 613,
+            "speculative": {
+              "predictableTokPerSec": 50.2,
+              "predictableTokensPerStep": 7.68,
+              "ratio": 1.46,
+              "verdict": "effective",
+              "tokensPerStep": 5.33,
+              "note": null
+            },
+            "runs": 1,
+            "note": null
+          }
+        ]
+      }
+    },
+    {
+      "run": "06-B",
+      "arm": "B",
+      "bench": {
+        "decodeTokPerSec": {
+          "median": 38.8,
+          "min": 37.4,
+          "max": 39.8,
+          "samples": [
+            37.4,
+            38.8,
+            39.8
+          ]
+        },
+        "streamCaveat": null,
+        "decodeLengthNote": "decode length forced to 192 tokens (ignore_eos + min_tokens) \u2014 decode and drift figures compare equal work",
+        "samplingNote": null,
+        "runsNote": "custom setup: rungs 2k, 8k, 16k, 32k \u2014 not comparable to default runs",
+        "ttftMs": {
+          "median": 394,
+          "min": 385,
+          "max": 403,
+          "samples": [
+            385,
+            394,
+            403
+          ]
+        },
+        "prefillTokPerSec": {
+          "median": 636.5,
+          "min": 631,
+          "max": 648.7,
+          "samples": [
+            648.7,
+            631,
+            636.5
+          ]
+        },
+        "prefillPromptTokens": 2042,
+        "speculative": {
+          "predictableTokPerSec": 81.4,
+          "novelTokPerSec": 19.9,
+          "ratio": 4.1,
+          "verdict": "effective",
+          "tokensPerStep": null,
+          "tokensPerStepNote": "22 write(s) for 192 tokens \u2014 stream looks buffered",
+          "reasoningCaveat": true,
+          "offScript": 0
+        },
+        "prefixCache": {
+          "coldTtftMs": 2389,
+          "warmTtftMs": 2135,
+          "speedup": 1.1,
+          "cachedTokens": 0,
+          "promptTokens": 1541,
+          "verdict": "none"
+        },
+        "batching": {
+          "streams": 4,
+          "singleTokPerSec": 20,
+          "aggregateTokPerSec": 21.3,
+          "efficiency": 0.27,
+          "worstTtftMs": 1792,
+          "verdict": "serialized"
+        },
+        "loadDrift": {
+          "firstTokPerSec": 38.8,
+          "lastTokPerSec": 38.1,
+          "driftPct": -1.8,
+          "elapsedMs": 335205,
+          "verdict": "steady"
+        },
+        "machine": {
+          "platform": "darwin",
+          "arch": "arm64",
+          "cpu": "Apple M5 Max",
+          "memGB": 128
+        },
+        "contextScaling": [
+          {
+            "targetTokens": 2048,
+            "inputTokens": 2107,
+            "decodeTokPerSec": 54,
+            "ttftMs": 2969,
+            "prefillTokPerSec": 710,
+            "speculative": {
+              "predictableTokPerSec": 75.4,
+              "predictableTokensPerStep": 7.68,
+              "ratio": 1.4,
+              "verdict": "effective",
+              "tokensPerStep": 5.65,
+              "note": null
+            },
+            "runs": 1,
+            "note": null
+          },
+          {
+            "targetTokens": 8192,
+            "inputTokens": 8222,
+            "decodeTokPerSec": 39.4,
+            "ttftMs": 11021,
+            "prefillTokPerSec": 746,
+            "speculative": {
+              "predictableTokPerSec": 57.4,
+              "predictableTokensPerStep": 7.68,
+              "ratio": 1.46,
+              "verdict": "effective",
+              "tokensPerStep": 5.19,
+              "note": null
+            },
+            "runs": 1,
+            "note": null
+          },
+          {
+            "targetTokens": 16384,
+            "inputTokens": 16339,
+            "decodeTokPerSec": 42.8,
+            "ttftMs": 25021,
+            "prefillTokPerSec": 653,
+            "speculative": {
+              "predictableTokPerSec": 58.8,
+              "predictableTokensPerStep": 8,
+              "ratio": 1.38,
+              "verdict": "effective",
+              "tokensPerStep": 6,
+              "note": null
+            },
+            "runs": 1,
+            "note": null
+          },
+          {
+            "targetTokens": 32768,
+            "inputTokens": 32882,
+            "decodeTokPerSec": 29.7,
+            "ttftMs": 52230,
+            "prefillTokPerSec": 630,
+            "speculative": {
+              "predictableTokPerSec": 44.1,
+              "predictableTokensPerStep": 7.68,
+              "ratio": 1.48,
+              "verdict": "effective",
+              "tokensPerStep": 5.49,
+              "note": null
+            },
+            "runs": 1,
+            "note": null
+          }
+        ]
+      }
+    },
+    {
+      "run": "07-B",
+      "arm": "B",
+      "bench": {
+        "decodeTokPerSec": {
+          "median": 36.8,
+          "min": 36.6,
+          "max": 39.2,
+          "samples": [
+            36.6,
+            39.2,
+            36.8
+          ]
+        },
+        "streamCaveat": null,
+        "decodeLengthNote": "decode length forced to 192 tokens (ignore_eos + min_tokens) \u2014 decode and drift figures compare equal work",
+        "samplingNote": null,
+        "runsNote": "custom setup: rungs 2k, 8k, 16k, 32k \u2014 not comparable to default runs",
+        "ttftMs": {
+          "median": 406,
+          "min": 403,
+          "max": 420,
+          "samples": [
+            403,
+            420,
+            406
+          ]
+        },
+        "prefillTokPerSec": {
+          "median": 677.1,
+          "min": 674.8,
+          "max": 702.4,
+          "samples": [
+            702.4,
+            677.1,
+            674.8
+          ]
+        },
+        "prefillPromptTokens": 2042,
+        "speculative": {
+          "predictableTokPerSec": 83.3,
+          "novelTokPerSec": 19.3,
+          "ratio": 4.31,
+          "verdict": "effective",
+          "tokensPerStep": null,
+          "tokensPerStepNote": "22 write(s) for 192 tokens \u2014 stream looks buffered",
+          "reasoningCaveat": true,
+          "offScript": 0
+        },
+        "prefixCache": {
+          "coldTtftMs": 2566,
+          "warmTtftMs": 2276,
+          "speedup": 1.1,
+          "cachedTokens": 0,
+          "promptTokens": 1541,
+          "verdict": "none"
+        },
+        "batching": {
+          "streams": 4,
+          "singleTokPerSec": 22,
+          "aggregateTokPerSec": 18.5,
+          "efficiency": 0.21,
+          "worstTtftMs": 2114,
+          "verdict": "serialized"
+        },
+        "loadDrift": {
+          "firstTokPerSec": 36.8,
+          "lastTokPerSec": 40,
+          "driftPct": 8.7,
+          "elapsedMs": 325438,
+          "verdict": "steady"
+        },
+        "machine": {
+          "platform": "darwin",
+          "arch": "arm64",
+          "cpu": "Apple M5 Max",
+          "memGB": 128
+        },
+        "contextScaling": [
+          {
+            "targetTokens": 2048,
+            "inputTokens": 2107,
+            "decodeTokPerSec": 42.7,
+            "ttftMs": 3097,
+            "prefillTokPerSec": 680,
+            "speculative": {
+              "predictableTokPerSec": 75.2,
+              "predictableTokensPerStep": 8,
+              "ratio": 1.76,
+              "verdict": "effective",
+              "tokensPerStep": 4.68,
+              "note": null
+            },
+            "runs": 1,
+            "note": null
+          },
+          {
+            "targetTokens": 8192,
+            "inputTokens": 8222,
+            "decodeTokPerSec": 45.2,
+            "ttftMs": 11238,
+            "prefillTokPerSec": 732,
+            "speculative": {
+              "predictableTokPerSec": 63,
+              "predictableTokensPerStep": 7.68,
+              "ratio": 1.39,
+              "verdict": "effective",
+              "tokensPerStep": 5.49,
+              "note": null
+            },
+            "runs": 1,
+            "note": null
+          },
+          {
+            "targetTokens": 16384,
+            "inputTokens": 16339,
+            "decodeTokPerSec": 39.8,
+            "ttftMs": 24461,
+            "prefillTokPerSec": 668,
+            "speculative": {
+              "predictableTokPerSec": 60.2,
+              "predictableTokensPerStep": null,
+              "ratio": 1.51,
+              "verdict": "effective",
+              "tokensPerStep": 5.49,
+              "note": null
+            },
+            "runs": 1,
+            "note": null
+          },
+          {
+            "targetTokens": 32768,
+            "inputTokens": 32882,
+            "decodeTokPerSec": 40.2,
+            "ttftMs": 51512,
+            "prefillTokPerSec": 638,
+            "speculative": {
+              "predictableTokPerSec": 47.1,
+              "predictableTokensPerStep": 8,
+              "ratio": 1.17,
+              "verdict": "marginal",
+              "tokensPerStep": 6.86,
+              "note": null
+            },
+            "runs": 1,
+            "note": null
+          }
+        ]
+      }
+    },
+    {
+      "run": "08-A",
+      "arm": "A",
+      "bench": {
+        "decodeTokPerSec": {
+          "median": 42.7,
+          "min": 40.8,
+          "max": 43.2,
+          "samples": [
+            43.2,
+            40.8,
+            42.7
+          ]
+        },
+        "streamCaveat": null,
+        "decodeLengthNote": "decode length forced to 192 tokens (ignore_eos + min_tokens) \u2014 decode and drift figures compare equal work",
+        "samplingNote": null,
+        "runsNote": "custom setup: rungs 2k, 8k, 16k, 32k \u2014 not comparable to default runs",
+        "ttftMs": {
+          "median": 364,
+          "min": 355,
+          "max": 369,
+          "samples": [
+            369,
+            355,
+            364
+          ]
+        },
+        "prefillTokPerSec": {
+          "median": 750.8,
+          "min": 741,
+          "max": 756.7,
+          "samples": [
+            750.8,
+            756.7,
+            741
+          ]
+        },
+        "prefillPromptTokens": 2043,
+        "speculative": {
+          "predictableTokPerSec": 85.8,
+          "novelTokPerSec": 21.3,
+          "ratio": 4.03,
+          "verdict": "effective",
+          "tokensPerStep": null,
+          "tokensPerStepNote": "22 write(s) for 192 tokens \u2014 stream looks buffered",
+          "reasoningCaveat": true,
+          "offScript": 0
+        },
+        "prefixCache": {
+          "coldTtftMs": 2390,
+          "warmTtftMs": 2274,
+          "speedup": 1.1,
+          "cachedTokens": 0,
+          "promptTokens": 1542,
+          "verdict": "none"
+        },
+        "batching": {
+          "streams": 4,
+          "singleTokPerSec": 23.9,
+          "aggregateTokPerSec": 20.6,
+          "efficiency": 0.21,
+          "worstTtftMs": 1896,
+          "verdict": "serialized"
+        },
+        "loadDrift": {
+          "firstTokPerSec": 42.7,
+          "lastTokPerSec": 38.5,
+          "driftPct": -9.8,
+          "elapsedMs": 309047,
+          "verdict": "steady"
+        },
+        "machine": {
+          "platform": "darwin",
+          "arch": "arm64",
+          "cpu": "Apple M5 Max",
+          "memGB": 128
+        },
+        "contextScaling": [
+          {
+            "targetTokens": 2048,
+            "inputTokens": 2101,
+            "decodeTokPerSec": 49.2,
+            "ttftMs": 2849,
+            "prefillTokPerSec": 737,
+            "speculative": {
+              "predictableTokPerSec": 71.5,
+              "predictableTokensPerStep": 8,
+              "ratio": 1.45,
+              "verdict": "effective",
+              "tokensPerStep": 5.49,
+              "note": null
+            },
+            "runs": 1,
+            "note": null
+          },
+          {
+            "targetTokens": 8192,
+            "inputTokens": 8243,
+            "decodeTokPerSec": 40.3,
+            "ttftMs": 11578,
+            "prefillTokPerSec": 712,
+            "speculative": {
+              "predictableTokPerSec": 62.3,
+              "predictableTokensPerStep": 7.38,
+              "ratio": 1.55,
+              "verdict": "effective",
+              "tokensPerStep": 4.92,
+              "note": null
+            },
+            "runs": 1,
+            "note": null
+          },
+          {
+            "targetTokens": 16384,
+            "inputTokens": 16333,
+            "decodeTokPerSec": 43.5,
+            "ttftMs": 22646,
+            "prefillTokPerSec": 721,
+            "speculative": {
+              "predictableTokPerSec": 73,
+              "predictableTokensPerStep": null,
+              "ratio": 1.68,
+              "verdict": "effective",
+              "tokensPerStep": 5.65,
+              "note": null
+            },
+            "runs": 1,
+            "note": null
+          },
+          {
+            "targetTokens": 32768,
+            "inputTokens": 32883,
+            "decodeTokPerSec": 37.3,
+            "ttftMs": 46491,
+            "prefillTokPerSec": 707,
+            "speculative": {
+              "predictableTokPerSec": 56.6,
+              "predictableTokensPerStep": 8,
+              "ratio": 1.52,
+              "verdict": "effective",
+              "tokensPerStep": 5.33,
+              "note": null
+            },
+            "runs": 1,
+            "note": null
+          }
+        ]
+      }
+    }
+  ]
+}
