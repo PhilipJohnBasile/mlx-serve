@@ -70,4 +70,3 @@ PR B (02-B; no width-9 split line in any PR log):
 | 8 | A | [08-A.llmprobe.json](session-01/08-A.llmprobe.json) |
 
 To recompute the summary, extract `evidence.zip` into this directory and run `python3 tests/summarize_pr302_abba.py benchmarks/pr302/2026-09-13/session-01` from the repository root.
-
